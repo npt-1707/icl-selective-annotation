@@ -35,6 +35,7 @@ parser.add_argument('--embedding_model', default='sentence-transformers/paraphra
 parser.add_argument('--annotation_size', default=100,type=int)
 parser.add_argument('--seed', default=0,type=int)
 parser.add_argument('--batch_size', default=10,type=int)
+parser.add_argument('--emb_batch_size', default=10,type=int)
 parser.add_argument('--debug', action='store_true')
 args = parser.parse_args()
 
@@ -56,12 +57,40 @@ if __name__=='__main__':
     if not os.path.isdir(args.output_dir):
         os.makedirs(args.output_dir,exist_ok=True)
     train_examples,eval_examples,train_text_to_encode,eval_text_to_encode,format_example,label_map = get_task(args=args)
-    total_train_embeds = calculate_sentence_transformer_embedding(text_to_encode=train_text_to_encode,
-                                                                  args=args)
-    total_eval_embeds = calculate_sentence_transformer_embedding(text_to_encode=eval_text_to_encode,
-                                                                  args=args)
+    # print("Train example 0:")
+    # print(train_examples[0])
+    # print("Eval example 0:")
+    # print(eval_examples[0])
+    # print("Train text to encode 0:")
+    # print(train_text_to_encode[0])
+    # print("Eval text to encode 0:")
+    # print(eval_text_to_encode[0])
+    # print("Formatted example 0:")
+    # print(format_example(train_examples[0],label_map=label_map,args=args))
+    # print("Label map:")
+    # print(label_map)
+    
+    if args.task_name == "vulfix":
+        if os.path.isfile(os.path.join(args.output_dir,'total_train_embeds.npy')):
+            total_train_embeds = np.load(os.path.join(args.output_dir,'total_train_embeds.npy'))
+            total_eval_embeds = np.load(os.path.join(args.output_dir,'total_eval_embeds.npy'))
+        else:
+            total_train_embeds = calculate_sentence_transformer_embedding(text_to_encode=train_text_to_encode,
+                                                                          args=args)
+            np.save(os.path.join(args.output_dir,'total_train_embeds.npy'),total_train_embeds)
+            total_eval_embeds = calculate_sentence_transformer_embedding(text_to_encode=eval_text_to_encode,
+                                                                          args=args)
+            np.save(os.path.join(args.output_dir,'total_eval_embeds.npy'),total_eval_embeds)
+    else:
+    
+        total_train_embeds = calculate_sentence_transformer_embedding(text_to_encode=train_text_to_encode,
+                                                                    args=args)
+        total_eval_embeds = calculate_sentence_transformer_embedding(text_to_encode=eval_text_to_encode,
+                                                                    args=args)
 
-    if args.task_name in ['mnli','rte','sst5','mrpc','dbpedia_14','hellaswag','xsum','nq']:
+    if args.task_name in ['mnli','rte','sst5','mrpc','dbpedia_14','hellaswag','xsum','nq', "vulfix"]:
+        if args.task_name == "vulfix":
+            inference_model = None
         if args.task_name=='xsum':
             tokenizer_gpt = AutoTokenizer.from_pretrained(args.model_name,cache_dir=args.model_cache_dir)
             inference_model = GPTJForCausalLM.from_pretrained("EleutherAI/gpt-j-6B",cache_dir=args.model_cache_dir)

@@ -3,6 +3,7 @@ import json
 import random
 from tqdm import tqdm
 from datasets import load_dataset
+import pandas as pd
 
 def format_dataset(sample):
     question = sample['question']['text']
@@ -431,6 +432,46 @@ def get_task(args):
         all_eval_text_to_encode = [raw_item['question']
                                    for raw_item in total_eval_examples]
         label_map = None
+    elif task_name == "vulfix":
+        if os.path.isfile(os.path.join(args.output_dir, f'train_examples_seed_{args.seed}.json')) and \
+                os.path.isfile(os.path.join(args.output_dir, f'eval_examples_seed_{args.seed}.json')):
+            print('use cached examples')
+            with open(os.path.join(args.output_dir, f'train_examples_seed_{args.seed}.json')) as f:
+                total_train_examples = json.load(f)
+            with open(os.path.join(args.output_dir, f'eval_examples_seed_{args.seed}.json')) as f:
+                total_eval_examples = json.load(f)
+        else:
+            data_path = os.path.join(args.data_cache_dir, '{}_{}.csv')
+            dataset = {}
+            for mode in ['train', 'valid', 'test']:
+                pos = pd.read_csv(data_path.format(mode, "pos"))
+                neg = pd.read_csv(data_path.format(mode, "neg"))
+                # replace nan with empty string in "commit_message" column only
+                pos['commit_message'] = pos['commit_message'].fillna('')
+                neg['commit_message'] = neg['commit_message'].fillna('')
+                pos.dropna()
+                neg.dropna()
+                dataset[mode] = pd.concat([pos, neg], ignore_index=True)
+            total_train_examples = dataset['train'].to_dict(orient='records')
+            total_eval_examples = dataset['valid'].to_dict(orient='records')
+            
+            with open(os.path.join(args.output_dir, f'train_examples_seed_{args.seed}.json'), 'w') as f:
+                json.dump(total_train_examples, f, indent=4)
+            with open(os.path.join(args.output_dir, f'eval_examples_seed_{args.seed}.json'), 'w') as f:
+                json.dump(total_eval_examples, f, indent=4)
+        if args.debug:
+            args.annotation_size = 10
+            args.batch_size = 1
+            total_train_examples = total_train_examples[:50]
+            total_eval_examples = total_eval_examples[:5]
+
+        all_train_text_to_encode = [(raw_item['commit_message'],raw_item['diff']) for raw_item in total_train_examples]
+        all_eval_text_to_encode = [(raw_item['commit_message'],raw_item['diff']) for raw_item in total_eval_examples]
+        def format_example(example, label_map, **kwargs):
+            return f"Question: Commit message: {example['commit_message']}\nCommit diff: {example['diff']}", f"Answer: {label_map[example['label']]}"
+    
+        label_map = {0: "no", 1: "yes"}
+        
     else:
         raise ValueError(f"{args.task_name} is not supported")
     return total_train_examples,total_eval_examples,all_train_text_to_encode,\

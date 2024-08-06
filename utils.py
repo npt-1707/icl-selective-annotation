@@ -3,18 +3,91 @@ import openai
 import json
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
+from transformers import AutoModel, AutoTokenizer
 from transformers import GPTJForCausalLM
 from collections import OrderedDict
 import sqlparse
 
+def tokenize_commit(tokenizer, message, diff, output_length):
+    mes_tokens = tokenizer.tokenize(message)
+    diff_tokens = tokenizer.tokenize(diff)
+    len_mes = len(mes_tokens)
+    len_diff = len(diff_tokens)
+    output = []
+    if len_mes + len_diff + 3 < output_length:
+        output += (
+            [tokenizer.cls_token]
+            + mes_tokens
+            + [tokenizer.sep_token]
+            + diff_tokens
+            + [tokenizer.sep_token]
+            + [tokenizer.pad_token] * (output_length - len_mes - len_diff - 3)
+        )
+        output_mask = [1 if i < len_mes + len_diff + 3 else 0 for i in range(output_length)]
+    else:
+        output_mask = [1 for i in range(output_length)]    
+        if len_mes + len_diff + 3 == output_length:
+            output += (
+                [tokenizer.cls_token]
+                + mes_tokens
+                + [tokenizer.sep_token]
+                + diff_tokens
+                + [tokenizer.sep_token]
+            )
+        else:
+            if len_mes > output_length - 2:
+                output += (
+                    [tokenizer.cls_token]
+                    + mes_tokens[: output_length - 2]
+                    + [tokenizer.sep_token]
+                )
+            else:
+                output += (
+                    [tokenizer.cls_token]
+                    + mes_tokens
+                    + [tokenizer.sep_token]
+                    + diff_tokens[: output_length - 3 - len_mes]
+                    + [tokenizer.sep_token]
+                )
+    assert len(output) == output_length, "Length of output is not equal to output_length"
+    output_id = tokenizer.convert_tokens_to_ids(output)
+    return output_id, output_mask
+
+
 def calculate_sentence_transformer_embedding(text_to_encode,args):
     num = len(text_to_encode)
-    emb_model = SentenceTransformer(args.embedding_model)
     embeddings = []
-    bar = tqdm(range(0,num,20),desc='calculate embeddings')
-    for i in range(0,num,20):
-        embeddings += emb_model.encode(text_to_encode[i:i+20]).tolist()
-        bar.update(1)
+    if args.task_name != "vulfix":
+        emb_model = SentenceTransformer(args.embedding_model)
+        bar = tqdm(range(0,num,20),desc='calculate embeddings')
+        for i in range(0,num,20):
+            embeddings += emb_model.encode(text_to_encode[i:i+20]).tolist()
+            bar.update(1)
+    else:
+        MAX_LENGTH = 512
+        ids = []
+        masks = []
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
+        for i in tqdm(range(len(text_to_encode))):
+            mes, diff = text_to_encode[i][0], text_to_encode[i][1]
+            id, mask = tokenize_commit(tokenizer, mes, diff, MAX_LENGTH)
+            ids.append(id)
+            masks.append(mask)
+        emb_model = AutoModel.from_pretrained("microsoft/codebert-base")
+        emb_model.to(device)
+        for i in range(0, len(ids), args.emb_batch_size):
+            start = i
+            end = min(i+args.emb_batch_size, len(ids))
+            print("Calculating embeddings for batch {} to {}".format(min, max))
+            ids_batch = torch.tensor(ids[start:end]).to(device)
+            masks_batch = torch.tensor(masks[start:end]).to(device)
+            assert ids_batch.shape[1] == MAX_LENGTH, "ids_batch shape is not correct: {}".format(ids_batch.shape)
+            assert masks_batch.shape[1] == MAX_LENGTH, "masks_batch shape is not correct: {}".format(masks_batch.shape)
+            with torch.no_grad():
+                output = emb_model(ids_batch, masks_batch)
+            embeddings += output[1].detach().cpu().tolist()
+        
     embeddings = torch.tensor(embeddings)
     mean_embeddings = torch.mean(embeddings, 0, True)
     embeddings = embeddings - mean_embeddings
