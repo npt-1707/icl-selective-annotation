@@ -6,13 +6,17 @@ from sentence_transformers import SentenceTransformer
 from transformers import AutoModel, AutoTokenizer
 from transformers import GPTJForCausalLM
 from collections import OrderedDict
+from openai import OpenAI
 import sqlparse
+
 
 def tokenize_commit(tokenizer, message, diff, output_length):
     mes_tokens = tokenizer.tokenize(message)
     diff_tokens = tokenizer.tokenize(diff)
     len_mes = len(mes_tokens)
     len_diff = len(diff_tokens)
+    with open("tokenization_log.csv", "a") as f:
+        f.write(f"{len_mes},{len_diff}\n")
     output = []
     if len_mes + len_diff + 3 < output_length:
         output += (
@@ -23,9 +27,11 @@ def tokenize_commit(tokenizer, message, diff, output_length):
             + [tokenizer.sep_token]
             + [tokenizer.pad_token] * (output_length - len_mes - len_diff - 3)
         )
-        output_mask = [1 if i < len_mes + len_diff + 3 else 0 for i in range(output_length)]
+        output_mask = [
+            1 if i < len_mes + len_diff + 3 else 0 for i in range(output_length)
+        ]
     else:
-        output_mask = [1 for i in range(output_length)]    
+        output_mask = [1 for i in range(output_length)]
         if len_mes + len_diff + 3 == output_length:
             output += (
                 [tokenizer.cls_token]
@@ -49,19 +55,21 @@ def tokenize_commit(tokenizer, message, diff, output_length):
                     + diff_tokens[: output_length - 3 - len_mes]
                     + [tokenizer.sep_token]
                 )
-    assert len(output) == output_length, "Length of output is not equal to output_length"
+    assert (
+        len(output) == output_length
+    ), "Length of output is not equal to output_length"
     output_id = tokenizer.convert_tokens_to_ids(output)
     return output_id, output_mask
 
 
-def calculate_sentence_transformer_embedding(text_to_encode,args):
+def calculate_sentence_transformer_embedding(text_to_encode, args):
     num = len(text_to_encode)
     embeddings = []
     if args.task_name != "vulfix":
         emb_model = SentenceTransformer(args.embedding_model)
-        bar = tqdm(range(0,num,20),desc='calculate embeddings')
-        for i in range(0,num,20):
-            embeddings += emb_model.encode(text_to_encode[i:i+20]).tolist()
+        bar = tqdm(range(0, num, 20), desc="calculate embeddings")
+        for i in range(0, num, 20):
+            embeddings += emb_model.encode(text_to_encode[i : i + 20]).tolist()
             bar.update(1)
     else:
         MAX_LENGTH = 512
@@ -78,49 +86,90 @@ def calculate_sentence_transformer_embedding(text_to_encode,args):
         emb_model.to(device)
         for i in range(0, len(ids), args.emb_batch_size):
             start = i
-            end = min(i+args.emb_batch_size, len(ids))
+            end = min(i + args.emb_batch_size, len(ids))
             print("Calculating embeddings for batch {} to {}".format(min, max))
             ids_batch = torch.tensor(ids[start:end]).to(device)
             masks_batch = torch.tensor(masks[start:end]).to(device)
-            assert ids_batch.shape[1] == MAX_LENGTH, "ids_batch shape is not correct: {}".format(ids_batch.shape)
-            assert masks_batch.shape[1] == MAX_LENGTH, "masks_batch shape is not correct: {}".format(masks_batch.shape)
+            assert (
+                ids_batch.shape[1] == MAX_LENGTH
+            ), "ids_batch shape is not correct: {}".format(ids_batch.shape)
+            assert (
+                masks_batch.shape[1] == MAX_LENGTH
+            ), "masks_batch shape is not correct: {}".format(masks_batch.shape)
             with torch.no_grad():
                 output = emb_model(ids_batch, masks_batch)
             embeddings += output[1].detach().cpu().tolist()
-        
+
     embeddings = torch.tensor(embeddings)
     mean_embeddings = torch.mean(embeddings, 0, True)
     embeddings = embeddings - mean_embeddings
     return embeddings
 
-def codex_execution(key,output_path,prompt_path):
+
+def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini"):
+    with open(prompt_path, "r") as f:
+        prompt = json.load(f)[1]
+    sys_prompt = [
+        "You are an expert in software engineering with years of experiment.",
+        "Your task is to determine whether a commit is a vulnarablity-fixing commit based on the commit message and diff.",
+        "Please think step by step.",
+    ]
+    client = OpenAI(api_key=key)
+    response = client.chat.completions.create(
+        model=model_name,
+        messages=[
+            {
+                "role": "system",
+                "content": " ".join(sys_prompt),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        logprobs=True,
+    )
+    with open(output_path, "w") as f:
+        f.write(response)
+    return response.choices[0].message.content
+
+
+def codex_execution(key, output_path, prompt_path):
     openai.api_key = key
     with open(prompt_path) as f:
         prompt = json.load(f)[1]
     completion = openai.Completion.create(
-        engine='code-davinci-002',
+        engine="code-davinci-002",
         prompt=prompt,
         max_tokens=50,
         temperature=0.7,
         logprobs=5,
-        stop=['--', '\n\n', ';', '#'],
+        stop=["--", "\n\n", ";", "#"],
     )
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(completion, f)
+
 
 def get_sub_answers(answers, begin=0, end=None):
     return [" ".join(x.split(" ")[begin:end]) for x in answers if len(x.split(" ")) > 1]
 
-PUNCTUATION_SET_TO_EXCLUDE = set(''.join(['‘', '’', '´', '`', '.', ',', '-', '"']))
+
+PUNCTUATION_SET_TO_EXCLUDE = set("".join(["‘", "’", "´", "`", ".", ",", "-", '"']))
+
+
 def expand_to_aliases(given_answers, make_sub_answers=False):
     if make_sub_answers:
-        given_answers = given_answers + get_sub_answers(given_answers, begin=1) + get_sub_answers(given_answers, end=-1)
+        given_answers = (
+            given_answers
+            + get_sub_answers(given_answers, begin=1)
+            + get_sub_answers(given_answers, end=-1)
+        )
     answers = []
     for answer in given_answers:
-        alias = answer.replace('_', ' ').lower()
-        alias = ''.join(c if c not in PUNCTUATION_SET_TO_EXCLUDE else ' ' for c in alias)
-        answers.append(' '.join(alias.split()).strip())
+        alias = answer.replace("_", " ").lower()
+        alias = "".join(
+            c if c not in PUNCTUATION_SET_TO_EXCLUDE else " " for c in alias
+        )
+        answers.append(" ".join(alias.split()).strip())
     return set(answers)
+
 
 table_prompt = """
 CREATE TABLE hotel(
@@ -216,6 +265,7 @@ lovell lodge  da vinci pizzeria 11:45 dontcare
 
 """
 
+
 def slot_values_to_seq_sql(original_slot_values, single_answer=False):
     sql_str = ""
     tables = OrderedDict()
@@ -224,15 +274,15 @@ def slot_values_to_seq_sql(original_slot_values, single_answer=False):
     # add '_' in SQL columns
     slot_values = {}
     for slot, value in original_slot_values.items():
-        if ' ' in slot:
-            slot = slot.replace(' ', '_')
+        if " " in slot:
+            slot = slot.replace(" ", "_")
         slot_values[slot] = value
 
     for slot, value in slot_values.items():
         assert len(slot.split("-")) == 2
 
-        if '|' in value:
-            value = value.split('|')[0]
+        if "|" in value:
+            value = value.split("|")[0]
 
         table, col = slot.split("-")  # slot -> table-col
 
@@ -242,7 +292,7 @@ def slot_values_to_seq_sql(original_slot_values, single_answer=False):
 
         # sometimes the answer is ambiguous
         if single_answer:
-            value = value.split('|')[0]
+            value = value.split("|")[0]
         col_value[slot] = value
 
     # When there is only one table
@@ -250,7 +300,9 @@ def slot_values_to_seq_sql(original_slot_values, single_answer=False):
         where_clause = []
         table = list(tables.keys())[0]
         for col in tables[table]:
-            where_clause.append("{} = {}".format(col, col_value["{}-{}".format(table, col)]))
+            where_clause.append(
+                "{} = {}".format(col, col_value["{}-{}".format(table, col)])
+            )
         sql_str = "SELECT * FROM {} WHERE {}".format(table, " AND ".join(where_clause))
     # When there are more than one table
     else:
@@ -261,10 +313,15 @@ def slot_values_to_seq_sql(original_slot_values, single_answer=False):
             t_i = "t{}".format(i + 1)
             from_clause.append("{} AS {}".format(table, t_i))
             for col in tables[table]:
-                where_clause.append("{}.{} = {}".format(t_i, col, col_value["{}-{}".format(table, col)]))
-        sql_str = "SELECT * FROM {} WHERE {}".format(", ".join(from_clause), " AND ".join(where_clause))
+                where_clause.append(
+                    "{}.{} = {}".format(t_i, col, col_value["{}-{}".format(table, col)])
+                )
+        sql_str = "SELECT * FROM {} WHERE {}".format(
+            ", ".join(from_clause), " AND ".join(where_clause)
+        )
 
     return sql_str
+
 
 class PreviousStateRecorder:
 
@@ -272,21 +329,22 @@ class PreviousStateRecorder:
         self.states = {}
 
     def add_state(self, data_item, slot_values):
-        dialog_ID = data_item['dialogue_ID']
-        turn_id = data_item['turn_id']
+        dialog_ID = data_item["dialogue_ID"]
+        turn_id = data_item["turn_id"]
         if dialog_ID not in self.states:
             self.states[dialog_ID] = {}
         self.states[dialog_ID][turn_id] = slot_values
 
     def state_retrieval(self, data_item):
-        dialog_ID = data_item['dialogue_ID']
-        turn_id = data_item['turn_id']
+        dialog_ID = data_item["dialogue_ID"]
+        turn_id = data_item["turn_id"]
         if turn_id == 0:
             return {}
         else:
             return self.states[dialog_ID][turn_id - 1]
 
-def codex_completion(prompt_text,key,output_path,model_name='code-davinci-002'):
+
+def codex_completion(prompt_text, key, output_path, model_name="code-davinci-002"):
     openai.api_key = key
     result = openai.Completion.create(
         engine=model_name,
@@ -294,11 +352,12 @@ def codex_completion(prompt_text,key,output_path,model_name='code-davinci-002'):
         max_tokens=200,
         temperature=0,
         logprobs=5,
-        stop=['--', '\n', ';', '#'],
+        stop=["--", "\n", ";", "#"],
     )
-    with open(output_path, 'w') as f:
+    with open(output_path, "w") as f:
         json.dump(result, f)
     return result["choices"][0]["text"]
+
 
 def sql_pred_parse(pred):
     # parse sql results and fix general errors
@@ -324,9 +383,16 @@ def sql_pred_parse(pred):
 
         table_name_map_dict = {}
         for indice in as_indices:
-            table_name_map_dict[sql_toks[indice + 1].replace(",", "")] = sql_toks[indice - 1]
+            table_name_map_dict[sql_toks[indice + 1].replace(",", "")] = sql_toks[
+                indice - 1
+            ]
 
-        slot_values_str = str(stmt.tokens[-1]).replace("_", " ").replace("""'""", "").replace("WHERE ", "")
+        slot_values_str = (
+            str(stmt.tokens[-1])
+            .replace("_", " ")
+            .replace("""'""", "")
+            .replace("WHERE ", "")
+        )
         for operator in operators:
             slot_values_str = slot_values_str.replace(operator, "-")
         slot_values = slot_values_str.split(" AND ")
@@ -339,103 +405,142 @@ def sql_pred_parse(pred):
 
         table_name = sql_toks[sql_toks.index("FROM") + 1]
 
-        slot_values_str = str(stmt.tokens[-1]).replace("_", " ").replace("""'""", "").replace("WHERE ", "")
+        slot_values_str = (
+            str(stmt.tokens[-1])
+            .replace("_", " ")
+            .replace("""'""", "")
+            .replace("WHERE ", "")
+        )
         for operator in operators:
             slot_values_str = slot_values_str.replace(operator, "-")
         slot_values = slot_values_str.split(" AND ")
 
-        pred_slot_values.extend([table_name + "-" + sv for sv in slot_values if slot_values != ['']])
+        pred_slot_values.extend(
+            [table_name + "-" + sv for sv in slot_values if slot_values != [""]]
+        )
 
-    pred_slot_values = {'-'.join(sv_pair.split('-')[:-1]): sv_pair.split('-')[-1] for sv_pair in pred_slot_values}
+    pred_slot_values = {
+        "-".join(sv_pair.split("-")[:-1]): sv_pair.split("-")[-1]
+        for sv_pair in pred_slot_values
+    }
 
     # remove _ in SQL columns
-    pred_slot_values = {slot.replace('_', ' '): value for slot, value in pred_slot_values.items()}
+    pred_slot_values = {
+        slot.replace("_", " "): value for slot, value in pred_slot_values.items()
+    }
 
     # fix typos
     # pred_slot_values, _ = typo_fix(pred_slot_values)
 
     return pred_slot_values
 
+
 def check_prefix_suffix(value, candidates):
     # add/delete "the" in the front, or the suffix in the end.
     if value in candidates:
         return value
-    prefixes = ['the ']
-    suffixes = [" hotel", " restaurant", ' cinema', ' guest house',
-                " theatre", " airport", " street", ' gallery', ' museum']
+    prefixes = ["the "]
+    suffixes = [
+        " hotel",
+        " restaurant",
+        " cinema",
+        " guest house",
+        " theatre",
+        " airport",
+        " street",
+        " gallery",
+        " museum",
+    ]
     for prefix in prefixes:
         if value.startswith(prefix):
-            value = value[len(prefix):]
+            value = value[len(prefix) :]
             break
     for suffix in suffixes:
         if value.endswith(suffix):
-            value = value[:-len(suffix)]
+            value = value[: -len(suffix)]
             break
-    for prefix in [''] + prefixes:
-        for suffix in [''] + suffixes:
+    for prefix in [""] + prefixes:
+        for suffix in [""] + suffixes:
             possible_value = prefix + value + suffix
             if possible_value in candidates:
                 return possible_value
-    return ''
+    return ""
+
 
 def typo_fix(slot_values, ontology, version="2.1"):
 
     # fix the named entities in these slots
-    named_entity_slots = ['hotel-name', 'train-destination', 'train-departure',
-                          'attraction-type', 'attraction-name',
-                          'restaurant-name', 'taxi-departure', 'taxi-destination', 'restaurant-food']
+    named_entity_slots = [
+        "hotel-name",
+        "train-destination",
+        "train-departure",
+        "attraction-type",
+        "attraction-name",
+        "restaurant-name",
+        "taxi-departure",
+        "taxi-destination",
+        "restaurant-food",
+    ]
     fixed = {}
     for slot, value in slot_values.items():
         # fix 's
-        value = value.replace(' s ', 's ')
-        if value.endswith(' s'):
-            value = value[:-2] + 's'
+        value = value.replace(" s ", "s ")
+        if value.endswith(" s"):
+            value = value[:-2] + "s"
 
         # fix typo words
-        general_typos = {'fen ditton': 'fenditton',
-                         'guesthouse': 'guest house',
-                         'steveage': 'stevenage',
-                         'stantsted': 'stansted',
-                         'storthford': 'stortford',
-                         'shortford': 'stortford',
-                         'weish': 'welsh',
-                         'bringham': 'birmingham',
-                         'liverpoool': 'liverpool',
-                         'petersborough': 'peterborough',
-                         'el shaddai': 'el shaddia',
-                         'wendesday': 'wednesday',
-                         'brazliian': 'brazilian',
-                         'graffton': 'grafton'}
+        general_typos = {
+            "fen ditton": "fenditton",
+            "guesthouse": "guest house",
+            "steveage": "stevenage",
+            "stantsted": "stansted",
+            "storthford": "stortford",
+            "shortford": "stortford",
+            "weish": "welsh",
+            "bringham": "birmingham",
+            "liverpoool": "liverpool",
+            "petersborough": "peterborough",
+            "el shaddai": "el shaddia",
+            "wendesday": "wednesday",
+            "brazliian": "brazilian",
+            "graffton": "grafton",
+        }
         for k, v in general_typos.items():
             value = value.replace(k, v)
 
         # fix whole value
-        value_replacement = {'center': 'centre',
-                             'caffe uno': 'cafe uno',
-                             'caffee uno': 'cafe uno',
-                             'christs college': 'christ college',
-                             'churchill college': 'churchills college',
-                             'sat': 'saturday',
-                             'saint johns chop shop house': 'saint johns chop house',
-                             'good luck chinese food takeaway': 'good luck',
-                             'asian': 'asian oriental',
-                             'gallery at 12': 'gallery at 12 a high street'}
+        value_replacement = {
+            "center": "centre",
+            "caffe uno": "cafe uno",
+            "caffee uno": "cafe uno",
+            "christs college": "christ college",
+            "churchill college": "churchills college",
+            "sat": "saturday",
+            "saint johns chop shop house": "saint johns chop house",
+            "good luck chinese food takeaway": "good luck",
+            "asian": "asian oriental",
+            "gallery at 12": "gallery at 12 a high street",
+        }
 
         if version == "2.1":
-            value_replacement['portuguese'] = 'portugese'
-            value_replacement['museum of archaeology and anthropology'] = 'museum of archaelogy and anthropology'
+            value_replacement["portuguese"] = "portugese"
+            value_replacement["museum of archaeology and anthropology"] = (
+                "museum of archaelogy and anthropology"
+            )
 
         if version == "2.4":
-            value_replacement['portugese'] = 'portuguese'
-            value_replacement['museum of archaelogy and anthropology'] = 'museum of archaeology and anthropology'
+            value_replacement["portugese"] = "portuguese"
+            value_replacement["museum of archaelogy and anthropology"] = (
+                "museum of archaeology and anthropology"
+            )
 
         for k, v in value_replacement.items():
             if value == k:
                 value = v
 
         # time format fix  9:00 -> 09:00
-        if ':' in value and len(value) < 5:
-            value = '0' + value
+        if ":" in value and len(value) < 5:
+            value = "0" + value
 
         if slot in named_entity_slots:
             value = check_prefix_suffix(value, ontology[slot])
@@ -443,6 +548,7 @@ def typo_fix(slot_values, ontology, version="2.1"):
         if value:
             fixed[slot] = value
     return fixed
+
 
 def compute_acc(gold, pred, n_slot=30):
 
@@ -485,10 +591,13 @@ def compute_prf(gold, pred):
         for p in pred:
             if p not in gold:
                 FP += 1
-        precision = TP / float(TP+FP) if (TP+FP) != 0 else 0
-        recall = TP / float(TP+FN) if (TP+FN) != 0 else 0
-        F1 = 2 * precision * recall / \
-            float(precision + recall) if (precision+recall) != 0 else 0
+        precision = TP / float(TP + FP) if (TP + FP) != 0 else 0
+        recall = TP / float(TP + FN) if (TP + FN) != 0 else 0
+        F1 = (
+            2 * precision * recall / float(precision + recall)
+            if (precision + recall) != 0
+            else 0
+        )
     else:
         if len(pred) == 0:
             precision, recall, F1, count = 1, 1, 1, 1
@@ -501,8 +610,8 @@ def evaluate(preds: dict, golds: dict):
 
     gold_slots = list(golds.keys())
     for k in gold_slots:
-        if '|' in golds[k]:
-            gold_values = golds[k].split('|')
+        if "|" in golds[k]:
+            gold_values = golds[k].split("|")
             if k in preds and preds[k] in gold_values:
                 golds[k] = preds[k]
 

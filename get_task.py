@@ -468,7 +468,7 @@ def get_task(args):
         all_train_text_to_encode = [(raw_item['commit_message'],raw_item['diff']) for raw_item in total_train_examples]
         all_eval_text_to_encode = [(raw_item['commit_message'],raw_item['diff']) for raw_item in total_eval_examples]
         def format_example(example, label_map, **kwargs):
-            return f"Question: Commit message: {example['commit_message']}\nCommit diff: {example['diff']}", f"Answer: {label_map[example['label']]}"
+            return f"Is the following commit a vulnerability-fixing commit?\nCommit message: {example['commit_message']}\nCommit diff: {example['diff']}", f"Answer: {label_map[example['label']]}"
     
         label_map = {0: "no", 1: "yes"}
         

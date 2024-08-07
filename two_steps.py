@@ -9,7 +9,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 from collections import defaultdict
 from sklearn.metrics.pairwise import cosine_similarity
-from utils import codex_execution
+from utils import codex_execution, gpt_completion
 
 def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_string,format_example,
                      maximum_input_len,args, label_map,prompt_identifier='prompts',single_context_example_len=None):
@@ -229,6 +229,15 @@ def iterative_selection(train_embs,test_embs,train_examples,test_examples,return
                         except Exception as e:
                             print(e)
                             time.sleep(3)
+                    elif args.task_name == "vulfix":
+                        cur_key = model_keys[execution_count % len(model_keys)]
+                        execution_count += 1
+                        try:
+                            gpt_completion(key=cur_key, output_path=os.path.join(output_dir, file),
+                                           prompt_path=os.path.join(prompt_dir, file))
+                        except Exception as e:
+                            print(e)
+                            time.sleep(3)
                     else:
                         with open(os.path.join(prompt_dir, file)) as f:
                             one_test_example = json.load(f)
@@ -257,6 +266,8 @@ def iterative_selection(train_embs,test_embs,train_examples,test_examples,return
                 if args.task_name in ['nq']:
                     idx_scores[idx] = sum(one_pred['choices'][0]["logprobs"]["token_logprobs"]) / len(
                         one_pred['choices'][0]["logprobs"]["token_logprobs"])
+                if args.task_name == "vulfix":
+                    idx_scores[idx] = np.mean([x.logprob for x in one_pred['choices'][0]['logprobs']['content']])
                 else:
                     idx_scores[idx] = one_pred[1]
         if args.task_name in ['xsum','nq']:

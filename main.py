@@ -69,7 +69,7 @@ if __name__=='__main__':
     # print(format_example(train_examples[0],label_map=label_map,args=args))
     # print("Label map:")
     # print(label_map)
-    
+
     if args.task_name == "vulfix":
         if os.path.isfile(os.path.join(args.output_dir,'total_train_embeds.npy')):
             total_train_embeds = np.load(os.path.join(args.output_dir,'total_train_embeds.npy'))
@@ -82,7 +82,7 @@ if __name__=='__main__':
                                                                           args=args)
             np.save(os.path.join(args.output_dir,'total_eval_embeds.npy'),total_eval_embeds)
     else:
-    
+
         total_train_embeds = calculate_sentence_transformer_embedding(text_to_encode=train_text_to_encode,
                                                                     args=args)
         total_eval_embeds = calculate_sentence_transformer_embedding(text_to_encode=eval_text_to_encode,
@@ -109,6 +109,13 @@ if __name__=='__main__':
             data_module = None
             tokenizer_gpt = None
             model_keys = args.model_key.split('##')
+        elif args.task_name == "vulfix":
+            maximum_input_len = 4096
+            single_input_len = 512
+            inference_model = None
+            data_module = None
+            tokenizer_gpt = None
+            return_string = True
         else:
             data_module = MetaICLData(method="direct", max_length=1024, max_length_per_example=256)
             inference_model = MetaICLModel(args=args)
@@ -119,7 +126,6 @@ if __name__=='__main__':
             return_string = False
             single_input_len = 250
             maximum_input_len = 1000
-
 
         if os.path.isfile(os.path.join(args.output_dir,'first_phase_selected_indices.json')):
             with open(os.path.join(args.output_dir,'first_phase_selected_indices.json')) as f:
