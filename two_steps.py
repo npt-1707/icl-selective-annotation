@@ -245,8 +245,7 @@ def iterative_selection(train_embs,test_embs,train_examples,test_examples,return
                             print(e)
                             time.sleep(3)
                     elif args.task_name == "vulfix":
-                        cur_key = model_keys[execution_count % len(model_keys)]
-                        execution_count += 1
+                        cur_key = os.environ['GPT_KEY']
                         try:
                             gpt_completion(key=cur_key, output_path=os.path.join(output_dir, file),
                                            prompt_path=os.path.join(prompt_dir, file))
