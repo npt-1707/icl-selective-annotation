@@ -7,10 +7,9 @@ from transformers import AutoModel, AutoTokenizer
 from transformers import GPTJForCausalLM
 from collections import OrderedDict
 from openai import OpenAI
-import sqlparse
+import os
 
-
-def bert_tokenize_commit(tokenizer, message, diff, output_length):
+def bert_tokenize_commit(tokenizer, message, diff, output_length, file):
     try:
         mes_tokens = tokenizer.tokenize(message)
         diff_tokens = tokenizer.tokenize(diff)
@@ -22,7 +21,7 @@ def bert_tokenize_commit(tokenizer, message, diff, output_length):
         assert False, "Error in tokenization"
     len_mes = len(mes_tokens)
     len_diff = len(diff_tokens)
-    with open("tokenization_log.csv", "a") as f:
+    with open(file, "a") as f:
         f.write(f"{len_mes},{len_diff}\n")
     output = []
     if len_mes + len_diff + 3 < output_length:
@@ -84,16 +83,17 @@ def calculate_sentence_transformer_embedding(text_to_encode, args):
         masks = []
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
+        log = os.path.join(args.output_dir, "tokenization_log.csv")
+        with open(log, "w") as f:
+            f.write("mes,diff\n")
         for i in tqdm(range(len(text_to_encode))):
             mes, diff = text_to_encode[i][0], text_to_encode[i][1]
-            id, mask = bert_tokenize_commit(tokenizer, mes, diff, MAX_LENGTH)
+            id, mask = bert_tokenize_commit(tokenizer, mes, diff, MAX_LENGTH, log)
             ids.append(id)
             masks.append(mask)
         emb_model = AutoModel.from_pretrained("microsoft/codebert-base")
         emb_model.to(device)
-        with open("tokenization_log.csv", "w") as f:
-            f.write("mes,diff\n")
-        for i in range(0, len(ids), args.emb_batch_size):
+        for i in tqdm(range(0, len(ids), args.emb_batch_size)):
             start = i
             end = min(i + args.emb_batch_size, len(ids))
             ids_batch = torch.tensor(ids[start:end]).to(device)
@@ -368,6 +368,7 @@ def codex_completion(prompt_text, key, output_path, model_name="code-davinci-002
 
 
 def sql_pred_parse(pred):
+    import sqlparse
     # parse sql results and fix general errors
 
     pred = " * FROM" + pred

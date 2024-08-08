@@ -35,7 +35,7 @@ from two_steps import selective_annotation, prompt_retrieval
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", required=True, type=str)
 parser.add_argument("--selective_annotation_method", required=True, type=str)
-parser.add_argument("--model_cache_dir", required=True, type=str)
+parser.add_argument("--model_cache_dir", type=str)
 parser.add_argument("--data_cache_dir", required=True, type=str)
 parser.add_argument("--output_dir", required=True, type=str)
 parser.add_argument("--model_key", type=str)
