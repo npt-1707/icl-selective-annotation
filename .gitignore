@@ -1,7 +1,8 @@
 .idea/*
 outputs
-MetalCL
+Meta*
 datasets
 models
 data*
 *log*
+test*
