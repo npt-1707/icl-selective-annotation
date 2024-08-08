@@ -135,7 +135,7 @@ def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini", logp
         logprobs=logprobs,
     )
     with open(output_path, "w") as f:
-        f.write(response)
+        f.write(response.to_json())
     return response.choices[0].message.content
 
 
