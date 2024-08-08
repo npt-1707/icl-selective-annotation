@@ -24,6 +24,14 @@ def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_st
     if not os.path.isdir(prompt_cache_dir):
         os.makedirs(prompt_cache_dir, exist_ok=True)
     for test_id, one_test_instance in enumerate(eval_examples):
+        file_name = (
+            f"{one_test_instance['id']}.json"
+            if "id" in one_test_instance
+            else f"{one_test_instance['commit_id']}.json"
+        )
+        if os.path.isfile(os.path.join(prompt_cache_dir, file_name)):
+            bar.update(1)
+            continue
         one_test_instance_input_text,one_test_instance_output_text = format_example(example=one_test_instance,args=args,
                                                                                     label_map=label_map)
         if args.task_name=='vulfix':
@@ -99,11 +107,7 @@ def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_st
                 example=one_test_instance,
                 args=args, label_map=label_map)[0]
         # print(f'{len(second_phase_selected_indices)} examples in context')
-        file_name = (
-            f"{one_test_instance['id']}.json"
-            if "id" in one_test_instance
-            else f"{one_test_instance['commit_id']}.json"
-        )
+        
         with open(os.path.join(prompt_cache_dir, file_name),'w') as f:
             json.dump([[test_id, second_phase_selected_indices, one_test_instance['label']],
                        cur_train_data,
