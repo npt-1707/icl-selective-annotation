@@ -18,8 +18,8 @@ from transformers import AutoTokenizer, GPTJForCausalLM
 # from sentence_transformers import SentenceTransformer
 # from datasets import load_dataset
 # from sklearn.metrics import f1_score
-from MetaICL.metaicl.data import MetaICLData
-from MetaICL.metaicl.model import MetaICLModel
+# from MetaICL.metaicl.data import MetaICLData
+# from MetaICL.metaicl.model import MetaICLModel
 
 # from collections import defaultdict
 from get_task import get_task
