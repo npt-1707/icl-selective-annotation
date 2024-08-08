@@ -189,7 +189,7 @@ def iterative_selection(train_embs,test_embs,train_examples,test_examples,return
             os.makedirs(output_dir, exist_ok=True)
         count = 0
         execution_count = 0
-        model_keys = args.model_key.split('##')
+        # model_keys = args.model_key.split('##')
         running_flag = True
         while running_flag:
             running_flag = False
