@@ -250,12 +250,15 @@ def iterative_selection(train_embs,test_embs,train_examples,test_examples,return
                             time.sleep(3)
                     elif args.task_name == "vulfix":
                         cur_key = os.environ['GPT_KEY']
-                        try:
-                            gpt_completion(key=cur_key, output_path=os.path.join(output_dir, file),
-                                           prompt_path=os.path.join(prompt_dir, file))
-                        except Exception as e:
-                            print(e)
-                            time.sleep(3)
+                        success_flag = False
+                        while not success_flag:
+                            try:
+                                gpt_completion(key=cur_key, output_path=os.path.join(output_dir, file),
+                                               prompt_path=os.path.join(prompt_dir, file))
+                                success_flag = True
+                            except Exception as e:
+                                print(e)
+                                time.sleep(2)
                     else:
                         with open(os.path.join(prompt_dir, file)) as f:
                             one_test_example = json.load(f)
