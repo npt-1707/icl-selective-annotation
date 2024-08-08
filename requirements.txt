@@ -1,0 +1,14 @@
+apex==0.9.10dev
+bitsandbytes==0.43.3
+english_words==2.0.1
+nltk==3.8.1
+numpy==1.24.4
+openai==1.40.0
+pandas==2.0.3
+rapidfuzz==3.9.6
+scikit_learn==1.2.2
+sentence_transformers==3.0.1
+sqlparse==0.5.1
+torch==2.2.2
+tqdm==4.66.5
+transformers==4.43.4

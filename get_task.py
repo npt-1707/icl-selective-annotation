@@ -441,19 +441,13 @@ def get_task(args):
             with open(os.path.join(args.output_dir, f'eval_examples_seed_{args.seed}.json')) as f:
                 total_eval_examples = json.load(f)
         else:
-            data_path = os.path.join(args.data_cache_dir, '{}_{}.csv')
-            dataset = {}
-            for mode in ['train', 'valid', 'test']:
-                pos = pd.read_csv(data_path.format(mode, "pos"))
-                neg = pd.read_csv(data_path.format(mode, "neg"))
-                # replace nan with empty string in "commit_message" column only
-                pos['commit_message'] = pos['commit_message'].fillna('')
-                neg['commit_message'] = neg['commit_message'].fillna('')
-                pos.dropna()
-                neg.dropna()
-                dataset[mode] = pd.concat([pos, neg], ignore_index=True)
+            data_path = os.path.join(args.data_cache_dir, 'vulfix_{}.csv')
+            dataset = {
+                key: pd.read_csv(data_path.format(key)).fillna("") for key in ['train', 'test']
+            }
+            dataset["train"] = dataset["train"].sample(frac=1).reset_index(drop=True)
             total_train_examples = dataset['train'].to_dict(orient='records')
-            total_eval_examples = dataset['valid'].to_dict(orient='records')
+            total_eval_examples = dataset['test'].to_dict(orient='records')
             
             with open(os.path.join(args.output_dir, f'train_examples_seed_{args.seed}.json'), 'w') as f:
                 json.dump(total_train_examples, f, indent=4)

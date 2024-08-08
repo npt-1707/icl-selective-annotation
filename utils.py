@@ -10,9 +10,16 @@ from openai import OpenAI
 import sqlparse
 
 
-def tokenize_commit(tokenizer, message, diff, output_length):
-    mes_tokens = tokenizer.tokenize(message)
-    diff_tokens = tokenizer.tokenize(diff)
+def bert_tokenize_commit(tokenizer, message, diff, output_length):
+    try:
+        mes_tokens = tokenizer.tokenize(message)
+        diff_tokens = tokenizer.tokenize(diff)
+    except Exception as e:
+        print("Error in tokenization: ", e)
+        print("Message: ", message)
+        print("Diff: ", diff)
+        print("Output length: ", output_length)
+        assert False, "Error in tokenization"
     len_mes = len(mes_tokens)
     len_diff = len(diff_tokens)
     with open("tokenization_log.csv", "a") as f:
@@ -79,15 +86,16 @@ def calculate_sentence_transformer_embedding(text_to_encode, args):
         tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
         for i in tqdm(range(len(text_to_encode))):
             mes, diff = text_to_encode[i][0], text_to_encode[i][1]
-            id, mask = tokenize_commit(tokenizer, mes, diff, MAX_LENGTH)
+            id, mask = bert_tokenize_commit(tokenizer, mes, diff, MAX_LENGTH)
             ids.append(id)
             masks.append(mask)
         emb_model = AutoModel.from_pretrained("microsoft/codebert-base")
         emb_model.to(device)
+        with open("tokenization_log.csv", "w") as f:
+            f.write("mes,diff\n")
         for i in range(0, len(ids), args.emb_batch_size):
             start = i
             end = min(i + args.emb_batch_size, len(ids))
-            print("Calculating embeddings for batch {} to {}".format(min, max))
             ids_batch = torch.tensor(ids[start:end]).to(device)
             masks_batch = torch.tensor(masks[start:end]).to(device)
             assert (
@@ -106,7 +114,7 @@ def calculate_sentence_transformer_embedding(text_to_encode, args):
     return embeddings
 
 
-def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini"):
+def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini", logprobs=True):
     with open(prompt_path, "r") as f:
         prompt = json.load(f)[1]
     sys_prompt = [
@@ -124,7 +132,7 @@ def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini"):
             },
             {"role": "user", "content": prompt},
         ],
-        logprobs=True,
+        logprobs=logprobs,
     )
     with open(output_path, "w") as f:
         f.write(response)
@@ -623,3 +631,49 @@ def evaluate(preds: dict, golds: dict):
     f1 = compute_prf(golds, preds)[0]
 
     return jga, acc, f1
+
+
+import logging
+
+
+class Logger:
+    def __init__(
+        self, log_file, log_level=logging.INFO, console=True, file_mode="w", time=True
+    ):
+        self.logger = logging.getLogger()
+        self.logger.setLevel(log_level)
+
+        if time:
+            formatter = logging.Formatter(
+                "[%(asctime)s] - [%(levelname)s]: %(message)s"
+            )
+        else:
+            formatter = logging.Formatter("[%(levelname)s]: %(message)s")
+
+        # Create a file handler
+        file_handler = logging.FileHandler(log_file, mode=file_mode)
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+
+        # Create a console handler
+        if console:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(log_level)
+            console_handler.setFormatter(formatter)
+            self.logger.addHandler(console_handler)
+
+    def log(self, message, level=logging.INFO):
+        self.logger.log(level, message)
+
+    def info(self, message):
+        self.logger.info(message)
+
+    def warning(self, message):
+        self.logger.warning(message)
+
+    def error(self, message):
+        self.logger.error(message)
+
+    def critical(self, message):
+        self.logger.critical(message)

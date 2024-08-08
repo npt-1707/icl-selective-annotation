@@ -4,6 +4,7 @@ import json
 import torch
 import time
 import numpy as np
+import tiktoken
 from torch import nn
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -14,6 +15,8 @@ from utils import codex_execution, gpt_completion
 def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_string,format_example,
                      maximum_input_len,args, label_map,prompt_identifier='prompts',single_context_example_len=None):
     cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+    train_embs = torch.tensor(train_embs)
+    test_embs = torch.tensor(test_embs)
     eval_example_num = len(eval_examples)
     bar = tqdm(range(eval_example_num), desc="Retrieve examples from annotated pool")
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -23,7 +26,10 @@ def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_st
     for test_id, one_test_instance in enumerate(eval_examples):
         one_test_instance_input_text,one_test_instance_output_text = format_example(example=one_test_instance,args=args,
                                                                                     label_map=label_map)
-        cur_prompt_string_len = get_instance_length(one_test_instance_input_text,one_test_instance_output_text,tokenizer)[0]
+        if args.task_name=='vulfix':
+            cur_prompt_string_len = num_tokens_from_string(one_test_instance_input_text,one_test_instance_output_text)[0]
+        else:
+            cur_prompt_string_len = get_instance_length(one_test_instance_input_text,one_test_instance_output_text,tokenizer)[0]
         if args.prompt_retrieval_method=='similar':
             test_e_reshape = test_embs[test_id].reshape(1, -1)
             scores = cos(test_e_reshape, train_embs).numpy()
@@ -39,8 +45,12 @@ def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_st
                 continue
             cur_example_input_text,cur_example_output_text = format_example(example=train_examples[sorted_indices[idx]],
                                                                             args=args,label_map=label_map)
-            cur_len = sum(get_instance_length(cur_example_input_text, cur_example_output_text,tokenizer=tokenizer))
-            if single_context_example_len is not None and cur_len>single_context_example_len:
+            if args.task_name=='vulfix':
+                cur_len = sum(num_tokens_from_string(cur_example_input_text,cur_example_output_text))
+                cur_example_input_text = tiktoken_truncate(cur_example_input_text, len=single_context_example_len)
+            else:
+                cur_len = sum(get_instance_length(cur_example_input_text, cur_example_output_text,tokenizer=tokenizer))
+            if single_context_example_len is not None and cur_len>single_context_example_len and args.task_name!='vulfix':  
                 continue
             cur_prompt_string_len += cur_len
             if cur_prompt_string_len > maximum_input_len:
@@ -89,7 +99,12 @@ def prompt_retrieval(train_embs,test_embs,train_examples,eval_examples,return_st
                 example=one_test_instance,
                 args=args, label_map=label_map)[0]
         # print(f'{len(second_phase_selected_indices)} examples in context')
-        with open(os.path.join(prompt_cache_dir,f"{one_test_instance['id']}.json"),'w') as f:
+        file_name = (
+            f"{one_test_instance['id']}.json"
+            if "id" in one_test_instance
+            else f"{one_test_instance['commit_id']}.json"
+        )
+        with open(os.path.join(prompt_cache_dir, file_name),'w') as f:
             json.dump([[test_id, second_phase_selected_indices, one_test_instance['label']],
                        cur_train_data,
                        one_test_instance
@@ -377,3 +392,14 @@ def selective_annotation(args,**kwargs):
 def get_instance_length(input_text,output_text,tokenizer):
     return len(tokenizer(input_text)['input_ids']),len(tokenizer(output_text)['input_ids'])
 
+
+def num_tokens_from_string(input: str, output: str, encoding_name: str="gpt-4o-mini"):
+    encoding = tiktoken.encoding_for_model(encoding_name)
+    input_len = len(encoding.encode(input))
+    output_len = len(encoding.encode(output))
+    return input_len, output_len
+
+def tiktoken_truncate(string, encoding_name="gpt-4o-mini", len=1024):
+    encoding = tiktoken.encoding_for_model(encoding_name)
+    encoded_text = encoding.encode(string)
+    return encoding.decode(encoded_text[:len])
