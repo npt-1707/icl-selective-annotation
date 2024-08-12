@@ -120,8 +120,12 @@ def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini", logp
     sys_prompt = [
         "You are an expert in software engineering with years of experiment.",
         "Your task is to determine whether a commit is a vulnarablity-fixing commit based on the commit message and diff.",
-        "Please think step by step.",
+        "A question with given commit message and diff is as follows: ```Was this commit made to fix a vulnerability, reveal the presence of security issues in the code, or have security implications?\nCommit message: <<commit_message>>\nCommit_diff: <<commit_diff>>```",
+        "You must provide a respose as following format: ```Answer: <answer>```.",
+        "The answer is 'yes' if the commit is related or have implications for security (e.g., Denial of Service from infinite loops, leakage of internal state/private information, path traversal, serialization that is too permissive, security-related config, etc), and 'no' otherwise.",
+        "Let's think step by step and provide the explaination after the answer as follow: ```Explaination: <reason>```.",
     ]
+
     client = OpenAI(api_key=key)
     response = client.chat.completions.create(
         model=model_name,

@@ -402,27 +402,43 @@ if __name__ == "__main__":
                 f.write(f"{total} examples, accuracy is: {correct / total}\n")
             print(f"{total} examples, accuracy is: {correct / total}\n")
         elif args.task_name == "vulfix":
-            logger = Logger(os.path.join(args.output_dir, "vulfix_log.log"), file_mode="a")
+            logger = Logger(os.path.join(args.output_dir, "vulfix_log.log"), file_mode="w")
             logger.log("Vulfix evaluation")
             correct = 0
             total = 0
+            unknown = 0
+            labels = []
+            preds = []
             for file in prompt_files:
                 with open(os.path.join(prompt_cache_dir, file)) as f:
                     one_test_example = json.load(f)
-                label = one_test_example[3]["label"]
+                label = one_test_example[2]["label"]
+                labels.append(label)
                 with open(os.path.join(output_dir, file)) as f:
                     pred_dict = json.load(f)
-                prediction = pred_dict["choices"][0]["message"]["context"].lower()
-                if "answer: yes" in prediction:
-                    pred = 1
-                elif "answer: no" in prediction:
+                prediction = pred_dict["choices"][0]["message"]["content"].lower()
+                if "answer: no" in prediction:
                     pred = 0
+                elif "answer: yes" in prediction:
+                    pred = 1
                 else:
                     logger.log(f"Undefined result in :{file}\n{prediction}")
+                    unknown += 1
+                    pred = 1-label
+                preds.append(pred)
                 if pred == label:
                     correct += 1
                 total += 1
-            logger.log(f"{total} examples, accuracy is: {correct / total}\n")
+            logger.log(f"{total} examples - correct predictions: {correct} - undefined predictions: {unknown}\n")
+            logger.log(f"{total-unknown} examples, accuracy is: {correct / (total-unknown)}\n")
+            from sklearn.metrics import classification_report
+            logger.log(classification_report(labels, preds))
+            #save labels and preds
+            with open(os.path.join(args.output_dir, "out.json"), "w") as f:
+                json.dump({
+                    "labels": labels,
+                    "preds": preds
+                }, f)
         else:
             assert len(golds) == len(
                 preds
