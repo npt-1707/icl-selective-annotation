@@ -96,27 +96,27 @@ if __name__ == "__main__":
     # print("Label map:")
     # print(label_map)
 
-    if args.task_name == "vulfix":
-        if os.path.isfile(os.path.join(args.output_dir, "total_train_embeds.npy")):
+    if args.task_name in ["vulfix", "treevul"]:
+        if os.path.isfile(os.path.join(args.output_dir, args.task_name, "total_train_embeds.npy")):
             total_train_embeds = np.load(
-                os.path.join(args.output_dir, "total_train_embeds.npy")
+                os.path.join(args.output_dir, args.task_name, "total_train_embeds.npy")
             )
             total_eval_embeds = np.load(
-                os.path.join(args.output_dir, "total_eval_embeds.npy")
+                os.path.join(args.output_dir, args.task_name, "total_eval_embeds.npy")
             )
         else:
             total_train_embeds = calculate_sentence_transformer_embedding(
                 text_to_encode=train_text_to_encode, args=args
             )
             np.save(
-                os.path.join(args.output_dir, "total_train_embeds.npy"),
+                os.path.join(args.output_dir, args.task_name, "total_train_embeds.npy"),
                 total_train_embeds,
             )
             total_eval_embeds = calculate_sentence_transformer_embedding(
                 text_to_encode=eval_text_to_encode, args=args
             )
             np.save(
-                os.path.join(args.output_dir, "total_eval_embeds.npy"),
+                os.path.join(args.output_dir, args.task_name, "total_eval_embeds.npy"),
                 total_eval_embeds,
             )
     else:
