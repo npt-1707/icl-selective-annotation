@@ -39,11 +39,8 @@ def prompt_retrieval(
         file_name = (
             f"{one_test_instance['id']}.json"
             if "id" in one_test_instance
-            else (
-                f"{one_test_instance['cve_list']}.json"
-                if "cve_list" in one_test_instance
-                else f"{one_test_instance['commit_id']}.json"
-            )
+            else f"{one_test_instance['commit_id']}.json" if "commit_id" in one_test_instance
+            else f"{one_test_instance[0]['cve_list']}.json"
         )
         if os.path.isfile(os.path.join(prompt_cache_dir, file_name)):
             bar.update(1)
@@ -183,7 +180,7 @@ def prompt_retrieval(
                     [
                         test_id,
                         second_phase_selected_indices,
-                        one_test_instance["label"],
+                        one_test_instance["label"] if 'label' in one_test_instance else one_test_instance[0]['cwe_list'],
                     ],
                     cur_train_data,
                     one_test_instance,
@@ -260,7 +257,7 @@ def iterative_selection(
         raise ValueError(
             f"iterative selection does not support {args.selective_annotation_method}"
         )
-    if not args.task_name in ["hellaswag", "xsum", "nq"]:
+    if not args.task_name in ["hellaswag", "xsum", "nq", "treevul"]:
         all_labels = []
         label_to_digit = {}
         for k, v in label_map.items():
@@ -426,9 +423,9 @@ def iterative_selection(
                 f"{test_examples[idx]['id']}.json"
                 if "id" in test_examples[idx]
                 else (
-                    f"{test_examples[idx]['cve_list']}.json"
-                    if "cve_list" in test_examples[idx]
-                    else f"{test_examples[idx]['commit_id']}.json"
+                    f"{test_examples[idx]['commit_id']}.json"
+                    if "commit_id" in test_examples[idx]
+                    else f"{test_examples[idx][0]['cve_list']}.json"
                 )
             )
             with open(f"{output_dir}/{file_name}.json") as f:
