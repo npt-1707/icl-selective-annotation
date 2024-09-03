@@ -6,3 +6,4 @@ models
 data*
 *log*
 test*
+.env

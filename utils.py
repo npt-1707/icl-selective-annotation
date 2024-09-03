@@ -9,7 +9,8 @@ from collections import OrderedDict
 from openai import OpenAI
 import os
 
-def bert_tokenize_commit(tokenizer, message, diff, output_length, file):
+
+def bert_tokenize_commit(tokenizer, message, diff, output_length):
     try:
         mes_tokens = tokenizer.tokenize(message)
         diff_tokens = tokenizer.tokenize(diff)
@@ -21,8 +22,7 @@ def bert_tokenize_commit(tokenizer, message, diff, output_length, file):
         assert False, "Error in tokenization"
     len_mes = len(mes_tokens)
     len_diff = len(diff_tokens)
-    with open(file, "a") as f:
-        f.write(f"{len_mes},{len_diff}\n")
+
     output = []
     if len_mes + len_diff + 3 < output_length:
         output += (
@@ -71,24 +71,15 @@ def bert_tokenize_commit(tokenizer, message, diff, output_length, file):
 def calculate_sentence_transformer_embedding(text_to_encode, args):
     num = len(text_to_encode)
     embeddings = []
-    if args.task_name != "vulfix":
-        emb_model = SentenceTransformer(args.embedding_model)
-        bar = tqdm(range(0, num, 20), desc="calculate embeddings")
-        for i in range(0, num, 20):
-            embeddings += emb_model.encode(text_to_encode[i : i + 20]).tolist()
-            bar.update(1)
-    else:
+    if args.task_name in ["vulfix", "treevul"]:
         MAX_LENGTH = 512
         ids = []
         masks = []
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-        log = os.path.join(args.output_dir, "tokenization_log.csv")
-        with open(log, "w") as f:
-            f.write("mes,diff\n")
         for i in tqdm(range(len(text_to_encode))):
             mes, diff = text_to_encode[i][0], text_to_encode[i][1]
-            id, mask = bert_tokenize_commit(tokenizer, mes, diff, MAX_LENGTH, log)
+            id, mask = bert_tokenize_commit(tokenizer, mes, diff, MAX_LENGTH)
             ids.append(id)
             masks.append(mask)
         emb_model = AutoModel.from_pretrained("microsoft/codebert-base")
@@ -107,6 +98,12 @@ def calculate_sentence_transformer_embedding(text_to_encode, args):
             with torch.no_grad():
                 output = emb_model(ids_batch, masks_batch)
             embeddings += output[1].detach().cpu().tolist()
+    else:
+        emb_model = SentenceTransformer(args.embedding_model)
+        bar = tqdm(range(0, num, 20), desc="calculate embeddings")
+        for i in range(0, num, 20):
+            embeddings += emb_model.encode(text_to_encode[i : i + 20]).tolist()
+            bar.update(1)
 
     embeddings = torch.tensor(embeddings)
     mean_embeddings = torch.mean(embeddings, 0, True)
@@ -114,16 +111,18 @@ def calculate_sentence_transformer_embedding(text_to_encode, args):
     return embeddings
 
 
-def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini", logprobs=True):
+def gpt_completion(
+    prompt_path, key, output_path, model_name="gpt-4o-mini", logprobs=True
+):
     with open(prompt_path, "r") as f:
         prompt = json.load(f)[1]
     sys_prompt = [
         "You are an expert in software engineering with years of experiment.",
         "Your task is to determine whether a commit is a vulnarablity-fixing commit based on the commit message and diff.",
         "A question with given commit message and diff is as follows: ```Was this commit made to fix a vulnerability, reveal the presence of security issues in the code, or have security implications?\nCommit message: <<commit_message>>\nCommit_diff: <<commit_diff>>```",
-        "You must provide a respose as following format: ```Answer: <answer>```.",
+        "Let's think step by step and provide the explaination as follow: 'Explaination: <reason>'.",
+        "You must conclude with a respose as following format: 'Answer: <answer>'.",
         "The answer is 'yes' if the commit is related or have implications for security (e.g., Denial of Service from infinite loops, leakage of internal state/private information, path traversal, serialization that is too permissive, security-related config, etc), and 'no' otherwise.",
-        "Let's think step by step and provide the explaination after the answer as follow: ```Explaination: <reason>```.",
     ]
 
     client = OpenAI(api_key=key)
@@ -140,7 +139,7 @@ def gpt_completion(prompt_path, key, output_path, model_name="gpt-4o-mini", logp
     )
     with open(output_path, "w") as f:
         f.write(response.to_json())
-    return response.choices[0].message.content
+    # return response.choices[0].message.content
 
 
 def codex_execution(key, output_path, prompt_path):
@@ -373,6 +372,7 @@ def codex_completion(prompt_text, key, output_path, model_name="code-davinci-002
 
 def sql_pred_parse(pred):
     import sqlparse
+
     # parse sql results and fix general errors
 
     pred = " * FROM" + pred
@@ -682,3 +682,20 @@ class Logger:
 
     def critical(self, message):
         self.logger.critical(message)
+
+    def debug(self, message):
+        self.logger.debug(message)
+
+
+import re
+
+
+def match_answer(text):
+    # check if "answer: yes" or "answer: no" is in the text, between "answer" and "yes" or "no" there can be some other character
+    # "answer" can be in lower or capital case
+    # return "yes" or "no" if found, otherwise return None
+    pattern = re.compile(r"answer.*\s+(yes|no)", re.IGNORECASE)
+    match = pattern.search(text)
+    if match:
+        return match.group(1)
+    return None

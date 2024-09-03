@@ -14,7 +14,8 @@ import time
 from tqdm import tqdm
 from datasets import load_metric
 from transformers import AutoTokenizer, GPTJForCausalLM
-
+from dotenv import load_dotenv
+load_dotenv()
 # from sentence_transformers import SentenceTransformer
 # from datasets import load_dataset
 # from sklearn.metrics import f1_score
@@ -28,6 +29,7 @@ from utils import (
     codex_execution,
     expand_to_aliases,
     gpt_completion,
+    match_answer,
     Logger,
 )
 from two_steps import selective_annotation, prompt_retrieval
@@ -136,6 +138,7 @@ if __name__ == "__main__":
         "xsum",
         "nq",
         "vulfix",
+        "treevul",
     ]:
         if args.task_name == "xsum":
             tokenizer_gpt = AutoTokenizer.from_pretrained(
@@ -159,7 +162,7 @@ if __name__ == "__main__":
             data_module = None
             tokenizer_gpt = None
             model_keys = args.model_key.split("##")
-        elif args.task_name == "vulfix":
+        elif args.task_name in ["vulfix", "treevul"]:
             maximum_input_len = 16384
             single_input_len = 1024
             inference_model = None
@@ -180,10 +183,10 @@ if __name__ == "__main__":
             maximum_input_len = 1000
 
         if os.path.isfile(
-            os.path.join(args.output_dir, "first_phase_selected_indices.json")
+            os.path.join(args.output_dir, args.task_name, "first_phase_selected_indices.json")
         ):
             with open(
-                os.path.join(args.output_dir, "first_phase_selected_indices.json")
+                os.path.join(args.output_dir, args.task_name, "first_phase_selected_indices.json")
             ) as f:
                 first_phase_selected_indices = json.load(f)
         else:
@@ -201,7 +204,7 @@ if __name__ == "__main__":
                 args=args,
             )
             with open(
-                os.path.join(args.output_dir, "first_phase_selected_indices.json"), "w"
+                os.path.join(args.output_dir, args.task_name, "first_phase_selected_indices.json"), "w"
             ) as f:
                 json.dump(first_phase_selected_indices, f, indent=4)
         processed_train_examples = [
@@ -222,16 +225,16 @@ if __name__ == "__main__":
             args=args,
         )
 
-        prompt_cache_dir = os.path.join(args.output_dir, "prompts")
+        prompt_cache_dir = os.path.join(args.output_dir, args.task_name, "prompts")
         candidate_prompt_files = os.listdir(prompt_cache_dir)
         prompt_files = [f for f in candidate_prompt_files if f.endswith(".json")]
         assert len(prompt_files) == len(processed_eval_examples), (
             f"len(prompt_files)={len(prompt_files)},"
             f"len(processed_eval_examples)={len(processed_eval_examples)}"
         )
-        output_dir = os.path.join(args.output_dir, "results")
+        output_dir = os.path.join(args.output_dir, args.task_name, "results")
         if not os.path.isdir(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(output_dir, args.task_name, exist_ok=True)
         count = 0
         running_flag = True
         golds = []
@@ -334,7 +337,7 @@ if __name__ == "__main__":
                         except Exception as e:
                             print(e)
                             time.sleep(3)
-                    elif args.task_name == "vulfix":
+                    elif args.task_name in ["vulfix", "treevul"]:
                         cur_key = os.environ["GPT_KEY"]
                         try:
                             gpt_completion(
@@ -345,7 +348,7 @@ if __name__ == "__main__":
                             )
                         except Exception as e:
                             print(e)
-                            time.sleep(3)
+                            time.sleep(1)
                     else:
                         with open(os.path.join(prompt_cache_dir, file)) as f:
                             one_test_example = json.load(f)
@@ -417,14 +420,16 @@ if __name__ == "__main__":
                 with open(os.path.join(output_dir, file)) as f:
                     pred_dict = json.load(f)
                 prediction = pred_dict["choices"][0]["message"]["content"].lower()
-                if "answer: no" in prediction:
-                    pred = 0
-                elif "answer: yes" in prediction:
+                pred = match_answer(prediction)
+                if pred == "yes":
                     pred = 1
+                elif pred == "no":
+                    pred = 0
                 else:
                     logger.log(f"Undefined result in :{file}\n{prediction}")
+                    pred = 1 - label
+                    # pred = label
                     unknown += 1
-                    pred = 1-label
                 preds.append(pred)
                 if pred == label:
                     correct += 1
@@ -433,12 +438,38 @@ if __name__ == "__main__":
             logger.log(f"{total-unknown} examples, accuracy is: {correct / (total-unknown)}\n")
             from sklearn.metrics import classification_report
             logger.log(classification_report(labels, preds))
-            #save labels and preds
+            # save labels and preds
             with open(os.path.join(args.output_dir, "out.json"), "w") as f:
                 json.dump({
                     "labels": labels,
                     "preds": preds
                 }, f)
+        elif args.task_name == "treevul":
+            import re
+            def match_answer(answer):
+                # use regex to match CWE id in the answer
+                pattern = re.compile(r"answer: CWE-(?P<id>\d+)", re.IGNORECASE)
+                m = pattern.search(answer)
+                if m:
+                    return "CWE-"+m.groupdict()['id']
+                return "N/A"
+            labels = []
+            preds = []
+            for file in prompt_files:
+                with open(os.path.join(prompt_cache_dir, file)) as f:
+                    one_test_example = json.load(f)
+                label = one_test_example[2]["cwe_list"]
+                labels.append(label)
+                with open(os.path.join(output_dir, file)) as f:
+                    pred_dict = json.load(f)
+                prediction = pred_dict["choices"][0]["message"]["content"]
+                pred = match_answer(prediction)
+                preds.append(pred)
+            from sklearn.metrics import classification_report
+            print(classification_report(labels, preds))
+            with open(os.path.join(args.output_dir, args.task_name, "classification_report.txt"), "w") as f:
+                f.write(classification_report(labels, preds))
+
         else:
             assert len(golds) == len(
                 preds

@@ -32,14 +32,18 @@ def prompt_retrieval(
     eval_example_num = len(eval_examples)
     bar = tqdm(range(eval_example_num), desc="Retrieve examples from annotated pool")
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    prompt_cache_dir = os.path.join(args.output_dir, prompt_identifier)
+    prompt_cache_dir = os.path.join(args.output_dir, args.task_name, prompt_identifier)
     if not os.path.isdir(prompt_cache_dir):
         os.makedirs(prompt_cache_dir, exist_ok=True)
     for test_id, one_test_instance in enumerate(eval_examples):
         file_name = (
             f"{one_test_instance['id']}.json"
             if "id" in one_test_instance
-            else f"{one_test_instance['commit_id']}.json"
+            else (
+                f"{one_test_instance['cve_list']}.json"
+                if "cve_list" in one_test_instance
+                else f"{one_test_instance['commit_id']}.json"
+            )
         )
         if os.path.isfile(os.path.join(prompt_cache_dir, file_name)):
             bar.update(1)
@@ -47,9 +51,9 @@ def prompt_retrieval(
         one_test_instance_input_text, one_test_instance_output_text = format_example(
             example=one_test_instance, args=args, label_map=label_map
         )
-        if args.task_name == "vulfix":
+        if args.task_name in ["vulfix", "treevul"]:
             one_test_instance_input_text = tiktoken_truncate(
-                one_test_instance_input_text, max_len=single_context_example_len*2
+                one_test_instance_input_text, max_len=single_context_example_len * 2
             )
             cur_prompt_string_len = num_tokens_from_string(
                 one_test_instance_input_text, one_test_instance_output_text
@@ -81,7 +85,7 @@ def prompt_retrieval(
                 args=args,
                 label_map=label_map,
             )
-            if args.task_name == "vulfix":
+            if args.task_name in ["vulfix", "treevul"]:
                 cur_example_input_text = tiktoken_truncate(
                     cur_example_input_text, max_len=single_context_example_len
                 )
@@ -101,7 +105,7 @@ def prompt_retrieval(
             if (
                 single_context_example_len is not None
                 and cur_len > single_context_example_len
-                and args.task_name != "vulfix"
+                and args.task_name in ["vulfix", "treevul"]
             ):
                 continue
             cur_prompt_string_len += cur_len
@@ -142,7 +146,7 @@ def prompt_retrieval(
                 args=args,
                 label_map=label_map,
             )
-            if args.task_name == "vulfix":
+            if args.task_name in ["vulfix", "treevul"]:
                 cur_input_text = tiktoken_truncate(
                     cur_input_text, max_len=single_context_example_len
                 )
@@ -169,7 +173,10 @@ def prompt_retrieval(
         if return_string:
             cur_train_data += one_test_instance_input_text
         # print(f'{len(second_phase_selected_indices)} examples in context')
-        assert num_tokens_from_string(cur_train_data, " ")[0] <= maximum_input_len + single_context_example_len, f"The prompt of {one_test_instance['commit_id']} is too long: {num_tokens_from_string(cur_train_data, ' ')[0]}" 
+        assert (
+            num_tokens_from_string(cur_train_data, " ")[0]
+            <= maximum_input_len + single_context_example_len
+        ), f"The prompt of {one_test_instance['commit_id']} is too long: {num_tokens_from_string(cur_train_data, ' ')[0]}"
         with open(os.path.join(prompt_cache_dir, file_name), "w") as f:
             json.dump(
                 [
@@ -247,7 +254,7 @@ def iterative_selection(
             embeddings=train_embs,
             select_num=args.batch_size,
             k=150,
-            vote_file=os.path.join(args.output_dir, "votek_cache.json"),
+            vote_file=os.path.join(args.output_dir, args.task_name, "votek_cache.json"),
         )
     else:
         raise ValueError(
@@ -279,15 +286,19 @@ def iterative_selection(
         )
 
         candidate_prompt_files = os.listdir(
-            os.path.join(args.output_dir, f"prompts_{batch_count}")
+            os.path.join(args.output_dir, args.task_name, f"prompts_{batch_count}")
         )
         prompt_files = [f for f in candidate_prompt_files if f.endswith(".json")]
         assert len(prompt_files) == len(test_examples), (
             f"len(prompt_files)={len(prompt_files)},"
             f"len(processed_eval_examples)={len(test_examples)}"
         )
-        output_dir = os.path.join(args.output_dir, f"results_iteration_{batch_count}")
-        prompt_dir = os.path.join(args.output_dir, f"prompts_{batch_count}")
+        output_dir = os.path.join(
+            args.output_dir, args.task_name, f"results_iteration_{batch_count}"
+        )
+        prompt_dir = os.path.join(
+            args.output_dir, args.task_name, f"prompts_{batch_count}"
+        )
         if not os.path.isdir(output_dir):
             os.makedirs(output_dir, exist_ok=True)
         count = 0
@@ -369,7 +380,7 @@ def iterative_selection(
                         except Exception as e:
                             print(e)
                             time.sleep(3)
-                    elif args.task_name == "vulfix":
+                    elif args.task_name == ["vulfix", "treevul"]:
                         cur_key = os.environ["GPT_KEY"]
                         success_flag = False
                         while not success_flag:
@@ -382,7 +393,7 @@ def iterative_selection(
                                 success_flag = True
                             except Exception as e:
                                 print(e)
-                                time.sleep(2)
+                                time.sleep(1)
                     else:
                         with open(os.path.join(prompt_dir, file)) as f:
                             one_test_example = json.load(f)
@@ -411,16 +422,25 @@ def iterative_selection(
                 else:
                     idx_scores[idx] = float("-inf")
                 continue
-            with open(f"{output_dir}/{test_examples[idx]['commit_id']}.json") as f:
+            file_name = (
+                f"{test_examples[idx]['id']}.json"
+                if "id" in test_examples[idx]
+                else (
+                    f"{test_examples[idx]['cve_list']}.json"
+                    if "cve_list" in test_examples[idx]
+                    else f"{test_examples[idx]['commit_id']}.json"
+                )
+            )
+            with open(f"{output_dir}/{file_name}.json") as f:
                 one_pred = json.load(f)
                 if args.task_name in ["nq"]:
                     idx_scores[idx] = sum(
                         one_pred["choices"][0]["logprobs"]["token_logprobs"]
                     ) / len(one_pred["choices"][0]["logprobs"]["token_logprobs"])
-                if args.task_name == "vulfix":
+                if args.task_name in ["vulfix", "treevul"]:
                     idx_scores[idx] = np.mean(
                         [
-                            x['logprob']
+                            x["logprob"]
                             for x in one_pred["choices"][0]["logprobs"]["content"]
                         ]
                     )
