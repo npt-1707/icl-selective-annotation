@@ -293,7 +293,7 @@ def iterative_selection(
             single_context_example_len=single_context_example_len,
         )
 
-        prompt_files = [f for f in prompt_dir if f.endswith(".json")]
+        prompt_files = [f for f in os.listdir(prompt_dir) if f.endswith(".json")]
         assert len(prompt_files) == len(test_examples), (
             f"len(prompt_files)={len(prompt_files)},"
             f"len(processed_eval_examples)={len(test_examples)}"
