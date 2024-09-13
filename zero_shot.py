@@ -25,6 +25,7 @@ parser.add_argument("--seed", required=True, type=int)
 parser.add_argument("--data_cache_dir", required=True, type=str)
 parser.add_argument("--output_dir", required=True, type=str)
 parser.add_argument("--debug", action="store_true")
+parser.add_argument("--model_name", default="gpt-4o-mini", type=str)
 args = parser.parse_args()
 
 
@@ -33,10 +34,6 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    
-
-        
-
 
 if __name__ == "__main__":
     set_seed(args.seed)
@@ -54,23 +51,37 @@ if __name__ == "__main__":
     single_input_len = 1024
 
     bar = tqdm(range(len(eval_examples)), desc="Generate and Evaluate 0-shot results")
-    ouput_cache_dir = os.path.join(args.output_dir, "zero_shot_output")
-    if not os.path.isdir(ouput_cache_dir):
-        os.makedirs(ouput_cache_dir, exist_ok=True)
-    prompt_cache_dir = os.path.join(args.output_dir, "zero_shot_prompt")
+    output_dir = os.path.join(args.output_dir, args.task_name, "zero_shot")
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
+    result_cache_dir = os.path.join(output_dir, "results")
+    if not os.path.isdir(result_cache_dir):
+        os.makedirs(result_cache_dir, exist_ok=True)
+    prompt_cache_dir = os.path.join(output_dir, "prompts")
     if not os.path.isdir(prompt_cache_dir):
         os.makedirs(prompt_cache_dir, exist_ok=True)
-    logger = Logger(os.path.join(args.output_dir, "zero_shot.log"), file_mode="w")
-    logger.log("Zero_shot Vulfix evaluation")
+    logger = Logger(os.path.join(output_dir, "zero_shot.log"), args.task_name, file_mode="w")
+    logger.log(f"Zero_shot {args.task_name} evaluation")
 
     labels = []
     preds = []
-    MAX_FETCH_TIMES = 5
 
     for id, instance in enumerate(eval_examples):
-        result_file = os.path.join(ouput_cache_dir, f"{instance['commit_id']}.json")
+        file_name = (
+            f"{instance['id']}.json"
+            if "id" in instance
+            else (
+                f"{instance['commit_id']}.json"
+                if "commit_id" in instance
+                else instance[0]["cve_list"]
+                + "-".join(instance[0]["repo"].split("/"))
+                + instance[0]["commit_id"]
+                + ".json"
+            )
+        )
+        result_file = os.path.join(result_cache_dir, file_name)
         if not os.path.isfile(result_file):
-            promt_file = os.path.join(prompt_cache_dir, f"{instance['commit_id']}.json")
+            promt_file = os.path.join(prompt_cache_dir, file_name)
             if os.path.isfile(promt_file):
                 with open(promt_file, "r") as f:
                     question = json.load(f)[1]
@@ -79,39 +90,42 @@ if __name__ == "__main__":
                 question = tiktoken_truncate(question, max_len=single_input_len * 2)
                 with open(promt_file, "w") as f:
                     json.dump([id, question, instance], f, indent=4)
-            fail_count = 0
-            existed = False
-            while fail_count < MAX_FETCH_TIMES and not existed:
                 try:
                     gpt_completion(
                         key=GPT_KEY,
                         output_path=result_file,
                         prompt_path=promt_file,
+                        sys_prompt_path=os.path.join("sys_prompts", f"{args.task_name}.json"),
+                        model_name=args.model_name,
                         logprobs=False,
                     )
                     existed = True
                 except Exception as e:
                     print(e)
-                    fail_count += 1
-                    logger.error(f"Error in {instance['commit_id']}, retrying {fail_count}/3...")
-                    time.sleep(3)
-            if fail_count == MAX_FETCH_TIMES:
-                logger.error(f"Failed to fetch API for {instance['commit_id']}.")
-        label = instance["label"]
-        with open(os.path.join(result_file), "r") as f:
-            pred_dict = json.load(f)
-        prediction = pred_dict["choices"][0]["message"]["content"].lower()
-        pred = match_answer(prediction)
-        if pred == "yes":
-            pred = 1
-        elif pred == "no":
-            pred = 0
-        else:
-            logger.log(f"Undefined result in :{result_file}\n{prediction}")
-            pred = 1 - label
-        labels.append(label)
-        preds.append(pred)
+                    time.sleep(1)
+        if args.task_name == "vulfix":
+            label = instance["label"]
+            with open(os.path.join(result_file), "r") as f:
+                pred_dict = json.load(f)
+            prediction = pred_dict["choices"][0]["message"]["content"].lower()
+            pred = match_answer(args.task_name, prediction)
+            if pred == "yes":
+                pred = 1
+            elif pred == "no":
+                pred = 0
+            else:
+                logger.log(f"Undefined result in :{result_file}\n{prediction}")
+                pred = 1 - label
+            labels.append(label)
+            preds.append(pred)
+        elif args.task_name == "treevul":
+            label = instance[0]["cwe_list"]
+            with open(os.path.join(result_file), "r") as f:
+                pred_dict = json.load(f)
+            prediction = pred_dict["choices"][0]["message"]["content"].lower()
+            pred = match_answer(args.task_name, prediction)
+            labels.append(label)
+            preds.append(pred)
         bar.update(1)
     bar.close()
-    logger.log("\n" + classification_report(labels, preds))
-    
+    logger.log("\n" + classification_report(labels, preds, zero_division=0))

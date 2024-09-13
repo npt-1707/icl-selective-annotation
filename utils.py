@@ -8,7 +8,7 @@ from transformers import GPTJForCausalLM
 from collections import OrderedDict
 from openai import OpenAI
 import os
-
+import re
 
 def bert_tokenize_commit(tokenizer, message, diff, output_length):
     try:
@@ -112,18 +112,13 @@ def calculate_sentence_transformer_embedding(text_to_encode, args):
 
 
 def gpt_completion(
-    prompt_path, key, output_path, model_name="gpt-4o-mini", logprobs=True
+    prompt_path, sys_prompt_path, key, output_path, model_name="gpt-4o-mini", logprobs=True
 ):
     with open(prompt_path, "r") as f:
         prompt = json.load(f)[1]
-    sys_prompt = [
-        "You are an expert in software engineering with years of experiment.",
-        "Your task is to determine whether a commit is a vulnarablity-fixing commit based on the commit message and diff.",
-        "A question with given commit message and diff is as follows: ```Was this commit made to fix a vulnerability, reveal the presence of security issues in the code, or have security implications?\nCommit message: <<commit_message>>\nCommit_diff: <<commit_diff>>```",
-        "Let's think step by step and provide the explaination as follow: 'Explaination: <reason>'.",
-        "You must conclude with a respose as following format: 'Answer: <answer>'.",
-        "The answer is 'yes' if the commit is related or have implications for security (e.g., Denial of Service from infinite loops, leakage of internal state/private information, path traversal, serialization that is too permissive, security-related config, etc), and 'no' otherwise.",
-    ]
+    
+    with open(sys_prompt_path, "r") as f:
+        sys_prompt = json.load(f)
 
     client = OpenAI(api_key=key)
     response = client.chat.completions.create(
@@ -643,9 +638,9 @@ import logging
 
 class Logger:
     def __init__(
-        self, log_file, log_level=logging.INFO, console=True, file_mode="w", time=True
+        self, log_file, name=None, log_level=logging.INFO, console=True, file_mode="w", time=True
     ):
-        self.logger = logging.getLogger()
+        self.logger = logging.getLogger(name)
         self.logger.setLevel(log_level)
 
         if time:
@@ -686,16 +681,21 @@ class Logger:
     def debug(self, message):
         self.logger.debug(message)
 
-
-import re
-
-
-def match_answer(text):
-    # check if "answer: yes" or "answer: no" is in the text, between "answer" and "yes" or "no" there can be some other character
-    # "answer" can be in lower or capital case
-    # return "yes" or "no" if found, otherwise return None
-    pattern = re.compile(r"answer.*\s+(yes|no)", re.IGNORECASE)
-    match = pattern.search(text)
-    if match:
-        return match.group(1)
-    return None
+def match_answer(task_name, answer):
+    if task_name == "vulfix":
+        # check if "answer: yes" or "answer: no" is in the answer, between "answer" and "yes" or "no" there can be some other character
+        # "answer" can be in lower or capital case
+        # return "yes" or "no" if found, otherwise return None
+        pattern = re.compile(r"answer.*\s+(yes|no)", re.IGNORECASE)
+        match = pattern.search(answer)
+        if match:
+            return match.group(1)
+        return None
+    elif task_name == "treevul":
+        # use regex to match CWE id in the answer
+        pattern = re.compile(r"answer: CWE-(?P<id>\d+)", re.IGNORECASE)
+        m = pattern.search(answer)
+        if m:
+            return "CWE-" + m.groupdict()["id"]
+        return "N/A"
+    raise ValueError(f"Unsupported task name: {task_name}")

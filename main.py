@@ -15,6 +15,7 @@ from tqdm import tqdm
 from datasets import load_metric
 from transformers import AutoTokenizer, GPTJForCausalLM
 from dotenv import load_dotenv
+
 load_dotenv()
 # from sentence_transformers import SentenceTransformer
 # from datasets import load_dataset
@@ -95,28 +96,28 @@ if __name__ == "__main__":
     # print(format_example(train_examples[0],label_map=label_map,args=args))
     # print("Label map:")
     # print(label_map)
-
+    output_dir = os.path.join(args.output_dir, args.task_name)
     if args.task_name in ["vulfix", "treevul"]:
-        if os.path.isfile(os.path.join(args.output_dir, args.task_name, "total_train_embeds.npy")):
-            total_train_embeds = np.load(
-                os.path.join(args.output_dir, args.task_name, "total_train_embeds.npy")
-            )
-            total_eval_embeds = np.load(
-                os.path.join(args.output_dir, args.task_name, "total_eval_embeds.npy")
-            )
+        train_embed_file = os.path.join(
+            output_dir, f"total_train_embeds_{args.seed}.npy"
+        )
+        eval_embed_file = os.path.join(output_dir, f"total_eval_embeds_{args.seed}.npy")
+        if os.path.isfile(train_embed_file) and os.path.isfile(eval_embed_file):
+            total_train_embeds = np.load(train_embed_file)
+            total_eval_embeds = np.load(eval_embed_file)
         else:
             total_train_embeds = calculate_sentence_transformer_embedding(
                 text_to_encode=train_text_to_encode, args=args
             )
             np.save(
-                os.path.join(args.output_dir, args.task_name, "total_train_embeds.npy"),
+                train_embed_file,
                 total_train_embeds,
             )
             total_eval_embeds = calculate_sentence_transformer_embedding(
                 text_to_encode=eval_text_to_encode, args=args
             )
             np.save(
-                os.path.join(args.output_dir, args.task_name, "total_eval_embeds.npy"),
+                eval_embed_file,
                 total_eval_embeds,
             )
     else:
@@ -182,12 +183,19 @@ if __name__ == "__main__":
             single_input_len = 250
             maximum_input_len = 1000
 
-        if os.path.isfile(
-            os.path.join(args.output_dir, args.task_name, "first_phase_selected_indices.json")
-        ):
-            with open(
-                os.path.join(args.output_dir, args.task_name, "first_phase_selected_indices.json")
-            ) as f:
+        output_dir = os.path.join(output_dir, args.selective_annotation_method)
+        if not os.path.isdir(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+        if args.selective_annotation_method == "random":
+            first_phase_selected_indices_file = os.path.join(
+                output_dir, f"first_phase_selected_indices_{args.seed}.json"
+            )
+        else:
+            first_phase_selected_indices_file = os.path.join(
+                output_dir, "first_phase_selected_indices.json"
+            )
+        if os.path.isfile(first_phase_selected_indices_file):
+            with open(first_phase_selected_indices_file, "r") as f:
                 first_phase_selected_indices = json.load(f)
         else:
             first_phase_selected_indices = selective_annotation(
@@ -201,10 +209,12 @@ if __name__ == "__main__":
                 inference_model=inference_model,
                 inference_data_module=data_module,
                 tokenizer_gpt=tokenizer_gpt,
+                output_dir=output_dir,
                 args=args,
             )
             with open(
-                os.path.join(args.output_dir, args.task_name, "first_phase_selected_indices.json"), "w"
+                first_phase_selected_indices_file,
+                "w",
             ) as f:
                 json.dump(first_phase_selected_indices, f, indent=4)
         processed_train_examples = [
@@ -212,6 +222,14 @@ if __name__ == "__main__":
         ]
         processed_eval_examples = eval_examples
 
+        prompt_identifier = (
+            f"prompts_{args.seed}"
+            if args.selective_annotation_method == "random"
+            else "prompts"
+        )
+        prompt_cache_dir = os.path.join(output_dir, prompt_identifier)
+        if not os.path.isdir(prompt_cache_dir):
+            os.makedirs(prompt_cache_dir, exist_ok=True)
         prompt_retrieval(
             train_embs=total_train_embeds[first_phase_selected_indices],
             test_embs=total_eval_embeds,
@@ -222,24 +240,26 @@ if __name__ == "__main__":
             maximum_input_len=maximum_input_len,
             single_context_example_len=single_input_len,
             label_map=label_map,
+            prompt_cache_dir=prompt_cache_dir,
             args=args,
         )
 
-        prompt_cache_dir = os.path.join(args.output_dir, args.task_name, "prompts")
         candidate_prompt_files = os.listdir(prompt_cache_dir)
         prompt_files = [f for f in candidate_prompt_files if f.endswith(".json")]
         assert len(prompt_files) == len(processed_eval_examples), (
             f"len(prompt_files)={len(prompt_files)},"
             f"len(processed_eval_examples)={len(processed_eval_examples)}"
         )
-        output_dir = os.path.join(args.output_dir, args.task_name, "results")
-        if not os.path.isdir(output_dir):
-            os.makedirs(output_dir, args.task_name, exist_ok=True)
+        result_dir = os.path.join(output_dir, f"results_{args.model_name}")
+        if args.selective_annotation_method == "random":
+            result_dir += f"_{args.seed}"
+        if not os.path.isdir(result_dir):
+            os.makedirs(result_dir, exist_ok=True)
         count = 0
         running_flag = True
         golds = []
         preds = []
-        if not args.task_name in ["hellaswag", "xsum", "nq"]:
+        if not args.task_name in ["hellaswag", "xsum", "nq", "treevul"]:
             all_labels = []
             label_to_digit = {}
             for k, v in label_map.items():
@@ -252,7 +272,7 @@ if __name__ == "__main__":
             bar = tqdm(range(len(prompt_files)), desc=f"  LLM inference")
             for file in prompt_files:
                 bar.update(1)
-                if not os.path.isfile(os.path.join(output_dir, file)):
+                if not os.path.isfile(os.path.join(result_dir, file)):
                     running_flag = True
 
                     if args.task_name == "hellaswag":
@@ -269,7 +289,7 @@ if __name__ == "__main__":
                         data_module.tensorize(cur_train_data, [cur_input])
                         prediction = inference_model.do_predict(data_module)[0]
                         assert prediction in one_test_example[2]["endings"]
-                        with open(f"{output_dir}/{file}", "w") as f:
+                        with open(f"{result_dir}/{file}", "w") as f:
                             json.dump(
                                 [
                                     prediction,
@@ -338,12 +358,19 @@ if __name__ == "__main__":
                             print(e)
                             time.sleep(3)
                     elif args.task_name in ["vulfix", "treevul"]:
+                        assert (
+                            "gpt" in args.model_name
+                        ), f"Unsupported model {args.model_name}"
                         cur_key = os.environ["GPT_KEY"]
                         try:
                             gpt_completion(
                                 key=cur_key,
-                                output_path=os.path.join(output_dir, file),
+                                output_path=os.path.join(result_dir, file),
                                 prompt_path=os.path.join(prompt_cache_dir, file),
+                                sys_prompt_path=os.path.join(
+                                    "sys_prompts", f"{args.task_name}.json"
+                                ),
+                                model_name=args.model_name,
                                 logprobs=False,
                             )
                         except Exception as e:
@@ -365,7 +392,7 @@ if __name__ == "__main__":
                             cur_train_data, [cur_input], options=all_labels
                         )
                         prediction = inference_model.do_predict(data_module)[0]
-                        with open(os.path.join(output_dir, file), "w") as f:
+                        with open(os.path.join(result_dir, file), "w") as f:
                             json.dump([prediction, one_test_example[2]["label"]], f)
                         preds.append(label_to_digit[prediction])
                         golds.append(one_test_example[2]["label"])
@@ -405,7 +432,7 @@ if __name__ == "__main__":
                 f.write(f"{total} examples, accuracy is: {correct / total}\n")
             print(f"{total} examples, accuracy is: {correct / total}\n")
         elif args.task_name == "vulfix":
-            logger = Logger(os.path.join(args.output_dir, "vulfix_log.log"), file_mode="w")
+            logger = Logger(os.path.join(output_dir, "vulfix_log.log"), file_mode="w")
             logger.log("Vulfix evaluation")
             correct = 0
             total = 0
@@ -417,10 +444,10 @@ if __name__ == "__main__":
                     one_test_example = json.load(f)
                 label = one_test_example[2]["label"]
                 labels.append(label)
-                with open(os.path.join(output_dir, file)) as f:
+                with open(os.path.join(result_dir, file)) as f:
                     pred_dict = json.load(f)
                 prediction = pred_dict["choices"][0]["message"]["content"].lower()
-                pred = match_answer(prediction)
+                pred = match_answer(args.task_name, prediction)
                 if pred == "yes":
                     pred = 1
                 elif pred == "no":
@@ -434,41 +461,43 @@ if __name__ == "__main__":
                 if pred == label:
                     correct += 1
                 total += 1
-            logger.log(f"{total} examples - correct predictions: {correct} - undefined predictions: {unknown}\n")
-            logger.log(f"{total-unknown} examples, accuracy is: {correct / (total-unknown)}\n")
+            logger.log(
+                f"{total} examples - correct predictions: {correct} - undefined predictions: {unknown}\n"
+            )
+            logger.log(
+                f"{total-unknown} examples, accuracy is: {correct / (total-unknown)}\n"
+            )
             from sklearn.metrics import classification_report
+
             logger.log(classification_report(labels, preds))
             # save labels and preds
-            with open(os.path.join(args.output_dir, "out.json"), "w") as f:
-                json.dump({
-                    "labels": labels,
-                    "preds": preds
-                }, f)
+            with open(os.path.join(output_dir, "out.json"), "w") as f:
+                json.dump({"labels": labels, "preds": preds}, f)
         elif args.task_name == "treevul":
-            import re
-            def match_answer(answer):
-                # use regex to match CWE id in the answer
-                pattern = re.compile(r"answer: CWE-(?P<id>\d+)", re.IGNORECASE)
-                m = pattern.search(answer)
-                if m:
-                    return "CWE-"+m.groupdict()['id']
-                return "N/A"
+            print("TreeVul evaluation")
             labels = []
             preds = []
             for file in prompt_files:
                 with open(os.path.join(prompt_cache_dir, file)) as f:
                     one_test_example = json.load(f)
-                label = one_test_example[2]["cwe_list"]
+                label = one_test_example[2][0]["cwe_list"]
                 labels.append(label)
-                with open(os.path.join(output_dir, file)) as f:
+                with open(os.path.join(result_dir, file)) as f:
                     pred_dict = json.load(f)
                 prediction = pred_dict["choices"][0]["message"]["content"]
-                pred = match_answer(prediction)
+                pred = match_answer(args.task_name, prediction)
                 preds.append(pred)
             from sklearn.metrics import classification_report
-            print(classification_report(labels, preds))
-            with open(os.path.join(args.output_dir, args.task_name, "classification_report.txt"), "w") as f:
-                f.write(classification_report(labels, preds))
+
+            if args.selective_annotation_method == "random":
+                report_file = f"classification_report_{args.model_name}_{args.seed}.txt"
+            else:
+                report_file = f"classification_report_{args.model_name}.txt"
+            with open(
+                os.path.join(output_dir, report_file),
+                "w",
+            ) as f:
+                f.write(classification_report(labels, preds, zero_division=0))
 
         else:
             assert len(golds) == len(

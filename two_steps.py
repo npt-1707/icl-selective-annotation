@@ -23,7 +23,7 @@ def prompt_retrieval(
     maximum_input_len,
     args,
     label_map,
-    prompt_identifier="prompts",
+    prompt_cache_dir,
     single_context_example_len=None,
 ):
     cos = nn.CosineSimilarity(dim=1, eps=1e-6)
@@ -32,15 +32,18 @@ def prompt_retrieval(
     eval_example_num = len(eval_examples)
     bar = tqdm(range(eval_example_num), desc="Retrieve examples from annotated pool")
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    prompt_cache_dir = os.path.join(args.output_dir, args.task_name, prompt_identifier)
-    if not os.path.isdir(prompt_cache_dir):
-        os.makedirs(prompt_cache_dir, exist_ok=True)
     for test_id, one_test_instance in enumerate(eval_examples):
         file_name = (
             f"{one_test_instance['id']}.json"
             if "id" in one_test_instance
-            else f"{one_test_instance['commit_id']}.json" if "commit_id" in one_test_instance
-            else f"{one_test_instance[0]['cve_list']}.json"
+            else (
+                f"{one_test_instance['commit_id']}.json"
+                if "commit_id" in one_test_instance
+                else one_test_instance[0]["cve_list"]
+                + "-".join(one_test_instance[0]["repo"].split("/"))
+                + one_test_instance[0]["commit_id"]
+                + ".json"
+            )
         )
         if os.path.isfile(os.path.join(prompt_cache_dir, file_name)):
             bar.update(1)
@@ -180,7 +183,11 @@ def prompt_retrieval(
                     [
                         test_id,
                         second_phase_selected_indices,
-                        one_test_instance["label"] if 'label' in one_test_instance else one_test_instance[0]['cwe_list'],
+                        (
+                            one_test_instance["label"]
+                            if "label" in one_test_instance
+                            else one_test_instance[0]["cwe_list"]
+                        ),
                     ],
                     cur_train_data,
                     one_test_instance,
@@ -242,6 +249,7 @@ def iterative_selection(
     inference_model,
     inference_data_module,
     tokenizer_gpt,
+    output_dir,
     args,
 ):
     if args.selective_annotation_method == "least_confidence":
@@ -251,7 +259,7 @@ def iterative_selection(
             embeddings=train_embs,
             select_num=args.batch_size,
             k=150,
-            vote_file=os.path.join(args.output_dir, args.task_name, "votek_cache.json"),
+            vote_file=os.path.join(output_dir, "votek_cache.json"),
         )
     else:
         raise ValueError(
@@ -268,6 +276,9 @@ def iterative_selection(
     while len(selected_indices) < args.annotation_size:
         batch_count += 1
         cur_annotated_examples = [train_examples[idx] for idx in selected_indices]
+        prompt_dir = os.path.join(output_dir, f"prompts_{batch_count}")
+        if not os.path.isdir(prompt_dir):
+            os.makedirs(prompt_dir, exist_ok=True)
         prompt_retrieval(
             train_embs=train_embs[selected_indices],
             test_embs=test_embs,
@@ -278,26 +289,21 @@ def iterative_selection(
             maximum_input_len=maximum_input_len,
             args=args,
             label_map=label_map,
-            prompt_identifier=f"prompts_{batch_count}",
+            prompt_cache_dir=prompt_dir,
             single_context_example_len=single_context_example_len,
         )
 
-        candidate_prompt_files = os.listdir(
-            os.path.join(args.output_dir, args.task_name, f"prompts_{batch_count}")
-        )
-        prompt_files = [f for f in candidate_prompt_files if f.endswith(".json")]
+        prompt_files = [f for f in prompt_dir if f.endswith(".json")]
         assert len(prompt_files) == len(test_examples), (
             f"len(prompt_files)={len(prompt_files)},"
             f"len(processed_eval_examples)={len(test_examples)}"
         )
-        output_dir = os.path.join(
-            args.output_dir, args.task_name, f"results_iteration_{batch_count}"
+        result_dir = os.path.join(
+            output_dir,
+            f"results_iteration_{batch_count}_{args.model_name}",
         )
-        prompt_dir = os.path.join(
-            args.output_dir, args.task_name, f"prompts_{batch_count}"
-        )
-        if not os.path.isdir(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
+        if not os.path.isdir(result_dir):
+            os.makedirs(result_dir, exist_ok=True)
         count = 0
         execution_count = 0
         # model_keys = args.model_key.split('##')
@@ -310,7 +316,7 @@ def iterative_selection(
             )
             for file in prompt_files:
                 bar.update(1)
-                if not os.path.isfile(os.path.join(output_dir, file)):
+                if not os.path.isfile(os.path.join(result_dir, file)):
                     running_flag = True
 
                     if args.task_name == "hellaswag":
@@ -377,15 +383,20 @@ def iterative_selection(
                         except Exception as e:
                             print(e)
                             time.sleep(3)
-                    elif args.task_name == ["vulfix", "treevul"]:
+                    elif args.task_name in ["vulfix", "treevul"]:
+                        assert (
+                            "gpt" in args.model_name
+                        ), f"Unsupported model {args.model_name}"
                         cur_key = os.environ["GPT_KEY"]
                         success_flag = False
                         while not success_flag:
                             try:
                                 gpt_completion(
                                     key=cur_key,
-                                    output_path=os.path.join(output_dir, file),
+                                    output_path=os.path.join(result_dir, file),
+                                    sys_prompt_path=os.path.join("sys_prompts", f"{args.task_name}.json"),
                                     prompt_path=os.path.join(prompt_dir, file),
+                                    model_name=args.model_name,
                                 )
                                 success_flag = True
                             except Exception as e:
@@ -407,7 +418,7 @@ def iterative_selection(
                         prediction = inference_model.do_predict(
                             inference_data_module, require_loss=True
                         )[0]
-                        with open(f"{output_dir}/{file}", "w") as f:
+                        with open(f"{result_dir}/{file}", "w") as f:
                             json.dump(prediction, f)
 
         idx_scores = {}
@@ -425,10 +436,13 @@ def iterative_selection(
                 else (
                     f"{test_examples[idx]['commit_id']}.json"
                     if "commit_id" in test_examples[idx]
-                    else f"{test_examples[idx][0]['cve_list']}.json"
+                    else test_examples[idx][0]["cve_list"]
+                    + "-".join(test_examples[idx][0]["repo"].split("/"))
+                    + test_examples[idx][0]["commit_id"]
+                    + ".json"
                 )
             )
-            with open(f"{output_dir}/{file_name}.json") as f:
+            with open(f"{result_dir}/{file_name}") as f:
                 one_pred = json.load(f)
                 if args.task_name in ["nq"]:
                     idx_scores[idx] = sum(
@@ -460,7 +474,7 @@ def iterative_selection(
                     cur_selected.append(sorted_scores[sorted_scores_iter][0])
             selected_indices += cur_selected
         else:
-            with open(os.path.join(args.output_dir, "votek_cache.json")) as f:
+            with open(os.path.join(output_dir, "votek_cache.json")) as f:
                 vote_stat = json.load(f)
             selected_times = defaultdict(int)
             select_num_1 = args.annotation_size - len(selected_indices)
@@ -511,6 +525,8 @@ def selective_annotation(args, **kwargs):
         selected_indices = random.sample(
             range(len(train_examples)), args.annotation_size
         )
+    elif args.selective_annotation_method == "all":
+        selected_indices = list(range(len(kwargs["train_examples"])))
     elif args.selective_annotation_method == "diversity":
         embeddings = kwargs["embeddings"]
         selected_indices = []
@@ -564,6 +580,7 @@ def selective_annotation(args, **kwargs):
             inference_model=kwargs["inference_model"],
             inference_data_module=kwargs["inference_data_module"],
             tokenizer_gpt=kwargs["tokenizer_gpt"],
+            output_dir=kwargs["output_dir"],
             args=args,
         )
     else:
