@@ -88,6 +88,8 @@ if __name__ == "__main__":
         args.task_name,
         args.emb_model if args.use_diff else f"{args.emb_model}_only_message",
     )
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
     if args.task_name in ["vulfix", "treevul"]:
         train_embed_file = os.path.join(
             output_dir, f"total_train_embeds_{args.seed}.npy"
