@@ -34,6 +34,7 @@ from utils import (
     Logger,
 )
 from two_steps import selective_annotation, prompt_retrieval
+from embedding_model import get_embedding_model
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--task_name", required=True, type=str)
@@ -43,16 +44,13 @@ parser.add_argument("--data_cache_dir", required=True, type=str)
 parser.add_argument("--output_dir", required=True, type=str)
 parser.add_argument("--model_key", type=str)
 parser.add_argument("--prompt_retrieval_method", default="similar", type=str)
-parser.add_argument("--model_name", default="EleutherAI/gpt-j-6B", type=str)
-parser.add_argument(
-    "--embedding_model",
-    default="sentence-transformers/paraphrase-mpnet-base-v2",
-    type=str,
-)
+parser.add_argument("--model_name", default="gpt-4o-mini", type=str)
+parser.add_argument("--emb_model", default="bert", type=str)
+parser.add_argument("--emb_batch_size", default=10, type=int)
+parser.add_argument("--use_diff", action="store_true")
 parser.add_argument("--annotation_size", default=100, type=int)
 parser.add_argument("--seed", default=0, type=int)
 parser.add_argument("--batch_size", default=10, type=int)
-parser.add_argument("--emb_batch_size", default=10, type=int)
 parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
 
@@ -84,37 +82,37 @@ if __name__ == "__main__":
         format_example,
         label_map,
     ) = get_task(args=args)
-    # print("Train example 0:")
-    # print(train_examples[0])
-    # print("Eval example 0:")
-    # print(eval_examples[0])
-    # print("Train text to encode 0:")
-    # print(train_text_to_encode[0])
-    # print("Eval text to encode 0:")
-    # print(eval_text_to_encode[0])
-    # print("Formatted example 0:")
-    # print(format_example(train_examples[0],label_map=label_map,args=args))
-    # print("Label map:")
-    # print(label_map)
-    output_dir = os.path.join(args.output_dir, args.task_name)
+    emb_model = get_embedding_model(args.emb_model, use_diff=args.use_diff)
+    output_dir = os.path.join(
+        args.output_dir,
+        args.task_name,
+        args.emb_model if args.use_diff else f"{args.emb_model}_only_message",
+    )
     if args.task_name in ["vulfix", "treevul"]:
         train_embed_file = os.path.join(
             output_dir, f"total_train_embeds_{args.seed}.npy"
         )
-        eval_embed_file = os.path.join(output_dir, f"total_eval_embeds_{args.seed}.npy")
+        eval_embed_file = os.path.join(
+            output_dir, f"total_eval_embeds_{args.seed}.npy"
+        )
         if os.path.isfile(train_embed_file) and os.path.isfile(eval_embed_file):
             total_train_embeds = np.load(train_embed_file)
             total_eval_embeds = np.load(eval_embed_file)
         else:
-            total_train_embeds = calculate_sentence_transformer_embedding(
-                text_to_encode=train_text_to_encode, args=args
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            total_train_embeds = emb_model.calculate_sentence_embedding(
+                sentences=train_text_to_encode,
+                device=device,
+                emb_batch_size=args.emb_batch_size,
             )
             np.save(
                 train_embed_file,
                 total_train_embeds,
             )
-            total_eval_embeds = calculate_sentence_transformer_embedding(
-                text_to_encode=eval_text_to_encode, args=args
+            total_eval_embeds = emb_model.calculate_sentence_embedding(
+                sentences=eval_text_to_encode,
+                device=device,
+                emb_batch_size=args.emb_batch_size,
             )
             np.save(
                 eval_embed_file,

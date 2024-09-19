@@ -10,7 +10,8 @@ from tqdm import tqdm
 from sklearn.metrics import classification_report
 from get_task import get_task
 from utils import (
-    gpt_completion, match_answer,
+    gpt_completion,
+    match_answer,
     Logger,
 )
 from two_steps import tiktoken_truncate
@@ -20,12 +21,14 @@ load_dotenv()
 GPT_KEY = os.getenv("GPT_KEY")
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--task_name", default="vulfix", type=str)
+parser.add_argument("--task_name", default="vulfix", required=True, type=str)
 parser.add_argument("--seed", required=True, type=int)
 parser.add_argument("--data_cache_dir", required=True, type=str)
 parser.add_argument("--output_dir", required=True, type=str)
 parser.add_argument("--debug", action="store_true")
-parser.add_argument("--model_name", default="gpt-4o-mini", type=str)
+parser.add_argument("--model_name", default="gpt-4o-mini", required=True, type=str)
+parser.add_argument("--emb_model", default="codebert", required=True, type=str)
+parser.add_argument("--use_diff", action="store_true")
 args = parser.parse_args()
 
 
@@ -34,6 +37,7 @@ def set_seed(seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
 
 if __name__ == "__main__":
     set_seed(args.seed)
@@ -51,17 +55,24 @@ if __name__ == "__main__":
     single_input_len = 1024
 
     bar = tqdm(range(len(eval_examples)), desc="Generate and Evaluate 0-shot results")
-    output_dir = os.path.join(args.output_dir, args.task_name, "zero_shot")
+    output_dir = os.path.join(
+        args.output_dir,
+        args.task_name,
+        args.emb_model if args.use_diff else f"{args.emb_model}_only_message",
+        "zero_shot",
+    )
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, exist_ok=True)
-    result_cache_dir = os.path.join(output_dir, "results")
+    result_cache_dir = os.path.join(output_dir, f"results_{args.model_name}")
     if not os.path.isdir(result_cache_dir):
         os.makedirs(result_cache_dir, exist_ok=True)
     prompt_cache_dir = os.path.join(output_dir, "prompts")
     if not os.path.isdir(prompt_cache_dir):
         os.makedirs(prompt_cache_dir, exist_ok=True)
-    logger = Logger(os.path.join(output_dir, "zero_shot.log"), args.task_name, file_mode="w")
-    logger.log(f"Zero_shot {args.task_name} evaluation")
+    # logger = Logger(
+    #     os.path.join(output_dir, "zero_shot.log"), args.task_name, file_mode="w"
+    # )
+    # logger.log(f"Zero_shot {args.task_name} evaluation")
 
     labels = []
     preds = []
@@ -95,7 +106,9 @@ if __name__ == "__main__":
                         key=GPT_KEY,
                         output_path=result_file,
                         prompt_path=promt_file,
-                        sys_prompt_path=os.path.join("sys_prompts", f"{args.task_name}.json"),
+                        sys_prompt_path=os.path.join(
+                            "sys_prompts", f"{args.task_name}.json"
+                        ),
                         model_name=args.model_name,
                         logprobs=False,
                     )
@@ -114,7 +127,7 @@ if __name__ == "__main__":
             elif pred == "no":
                 pred = 0
             else:
-                logger.log(f"Undefined result in :{result_file}\n{prediction}")
+                # logger.log(f"Undefined result in :{result_file}\n{prediction}")
                 pred = 1 - label
             labels.append(label)
             preds.append(pred)
@@ -128,4 +141,6 @@ if __name__ == "__main__":
             preds.append(pred)
         bar.update(1)
     bar.close()
-    logger.log("\n" + classification_report(labels, preds, zero_division=0))
+    # logger.log("\n" + classification_report(labels, preds, zero_division=0))
+    with open(os.path.join(output_dir, f"classification_report_{args.model_name}.json"), "w") as f:
+        f.write(classification_report(labels, preds, zero_division=0))
