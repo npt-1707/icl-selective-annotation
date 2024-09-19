@@ -85,7 +85,7 @@ class BERTModel(CommitEmbeddingModel):
             masks_tensor = torch.tensor(masks_batch).to(device)
             with torch.no_grad():
                 output = self.model(ids_tensor, attention_mask=masks_tensor)
-                embeddings+=output[1].detach().cpu().numpy()
+                embeddings+=output[1].detach().cpu().tolist()
         embeddings = np.array(embeddings)
         mean_embeddings = np.mean(embeddings, axis=0, keepdims=True)
         embeddings = embeddings - mean_embeddings
