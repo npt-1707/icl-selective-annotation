@@ -131,6 +131,8 @@ def gpt_completion(
             {"role": "user", "content": prompt},
         ],
         logprobs=logprobs,
+        max_tokens=200,
+        temperature=0.3,
     )
     with open(output_path, "w") as f:
         f.write(response.to_json())
@@ -699,3 +701,53 @@ def match_answer(task_name, answer):
             return "CWE-" + m.groupdict()["id"]
         return "N/A"
     raise ValueError(f"Unsupported task name: {task_name}")
+
+def get_cwe_path(cwe, cwe_map):
+    if cwe not in cwe_map:
+        return []
+    return cwe_map[cwe]
+
+def evaluate_treevul(preds, labels, cwe_map_path, depth=3):
+    with open(cwe_map_path, "r") as f:
+        cwe_map = json.load(f)
+    # assert len(preds) == len(labels), "[BEFORE] Number of predictions and labels are not equal"
+    eval_labels = []
+    eval_preds = []
+    correct = 0
+    total = 0
+    for eval_cwe, pred_cwe in zip(labels, preds):
+        eval_cwe_path = get_cwe_path(eval_cwe, cwe_map)
+        pred_cwe_path = get_cwe_path(pred_cwe, cwe_map)
+        if len(eval_cwe_path) >= depth:
+            total += depth
+            eval_labels.append(eval_cwe_path[depth-1])
+            if len(pred_cwe_path) < depth or len(pred_cwe_path) == 0:
+                eval_preds.append("N/A")
+            else:
+                correct += len(set(eval_cwe_path[:depth]) & set(pred_cwe_path[:depth]))
+                eval_preds.append(pred_cwe_path[depth-1])
+    path_fraction = correct / total if total > 0 else 0
+    
+    # assert len(eval_labels) == len(eval_preds), f"[AFTER] Number of labels and predictions are not equal: before: {len(preds)} after: {len(eval_labels)} - {len(eval_preds)}"
+    return eval_preds, eval_labels, path_fraction
+
+def get_ColBERT_indexer_searcher(collections, args):
+    if not torch.cuda.is_available():
+        raise ValueError("ColBERT requires a GPU to run.")
+    from colbert import Indexer, Searcher
+    from colbert.infra import Run, RunConfig, ColBERTConfig
+
+    nbits = 2   # encode each dimension with 2 bits
+    doc_maxlen = 300 # truncate passages at 300 tokens
+    index_name = f"index.{nbits}bits"
+    checkpoint = 'colbert-ir/colbertv2.0'
+
+    experiment = args.task_name + "_" + args.emb_model if args.use_diff else f"{args.emb_model}_only_message" + "_" + args.selective_annotation_method + "_" + args.seed
+    with Run().context(RunConfig(nranks=1, experiment=experiment)):  # nranks specifies the number of GPUs to use
+        config = ColBERTConfig(doc_maxlen=doc_maxlen, nbits=nbits, kmeans_niters=4) # kmeans_niters specifies the number of iterations of k-means clustering; 4 is a good and fast default.                                                                           # Consider larger numbers for small datasets.
+
+        indexer = Indexer(checkpoint=checkpoint, config=config)
+        indexer.index(name=index_name, collection=collections, overwrite="resume")
+    with Run().context(RunConfig(nranks=1, experiment=experiment)):
+        searcher = Searcher(index=index_name, collection=collections)
+    return searcher

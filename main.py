@@ -42,7 +42,7 @@ parser.add_argument("--selective_annotation_method", required=True, type=str)
 parser.add_argument("--model_cache_dir", type=str)
 parser.add_argument("--data_cache_dir", required=True, type=str)
 parser.add_argument("--output_dir", required=True, type=str)
-parser.add_argument("--model_key", type=str)
+parser.add_argument("--key", type=str)
 parser.add_argument("--prompt_retrieval_method", default="similar", type=str)
 parser.add_argument("--model_name", default="gpt-4o-mini", type=str)
 parser.add_argument("--emb_model", default="bert", type=str)
@@ -51,6 +51,9 @@ parser.add_argument("--use_diff", action="store_true")
 parser.add_argument("--annotation_size", default=100, type=int)
 parser.add_argument("--seed", default=0, type=int)
 parser.add_argument("--batch_size", default=10, type=int)
+# parser.add_argument("--eval_depth", default=3, type=int)
+parser.add_argument("--few_shot", default=3, type=int)
+parser.add_argument("--thershold", default=0.5, type=float)
 parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
 
@@ -83,6 +86,8 @@ if __name__ == "__main__":
         label_map,
     ) = get_task(args=args)
     emb_model = get_embedding_model(args.emb_model, use_diff=args.use_diff)
+    if args.emb_model == "openai":
+        args.key = os.getenv("GPT_KEY")
     output_dir = os.path.join(
         args.output_dir,
         args.task_name,
@@ -91,21 +96,15 @@ if __name__ == "__main__":
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir, exist_ok=True)
     if args.task_name in ["vulfix", "treevul"]:
-        train_embed_file = os.path.join(
-            output_dir, f"total_train_embeds_{args.seed}.npy"
-        )
-        eval_embed_file = os.path.join(
-            output_dir, f"total_eval_embeds_{args.seed}.npy"
-        )
+        train_embed_file = os.path.join(output_dir, f"total_train_embeds.npy")
+        eval_embed_file = os.path.join(output_dir, f"total_eval_embeds.npy")
         if os.path.isfile(train_embed_file) and os.path.isfile(eval_embed_file):
             total_train_embeds = np.load(train_embed_file)
             total_eval_embeds = np.load(eval_embed_file)
         else:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             total_train_embeds = emb_model.calculate_sentence_embedding(
-                sentences=train_text_to_encode,
-                device=device,
-                emb_batch_size=args.emb_batch_size,
+                sentences=train_text_to_encode, args=args
             )
             np.save(
                 train_embed_file,
@@ -113,8 +112,7 @@ if __name__ == "__main__":
             )
             total_eval_embeds = emb_model.calculate_sentence_embedding(
                 sentences=eval_text_to_encode,
-                device=device,
-                emb_batch_size=args.emb_batch_size,
+                args=args,
             )
             np.save(
                 eval_embed_file,
@@ -487,17 +485,38 @@ if __name__ == "__main__":
                 prediction = pred_dict["choices"][0]["message"]["content"]
                 pred = match_answer(args.task_name, prediction)
                 preds.append(pred)
-            from sklearn.metrics import classification_report
 
+            from sklearn.metrics import classification_report, precision_recall_fscore_support, matthews_corrcoef
+            from utils import evaluate_treevul
+
+            cwe_path = "/".join(args.data_cache_dir.split("/")[:-1]) + "/data/cwe_path.json"
+            report_file_name = f"result_{args.model_name}"
             if args.selective_annotation_method == "random":
-                report_file = f"classification_report_{args.model_name}_{args.seed}.txt"
+                report_file_name += f"_{args.seed}.txt"
             else:
-                report_file = f"classification_report_{args.model_name}.txt"
+                report_file_name += ".txt"
             with open(
-                os.path.join(output_dir, report_file),
+                os.path.join(output_dir, report_file_name),
                 "w",
             ) as f:
-                f.write(classification_report(labels, preds, zero_division=0))
+                for i in range(1, 6):
+                    f.write(f"Evaluating in depth {i}\n")
+                    eval_preds, eval_labels, path_fraction = evaluate_treevul(
+                        preds, labels, cwe_path, i
+                    )
+                    _, _, w_f1, _ = precision_recall_fscore_support(
+                        eval_labels, eval_preds, average="weighted", zero_division=0
+                    )
+                    _, _, m_f1, _ = precision_recall_fscore_support(
+                        eval_labels, eval_preds, average="macro", zero_division=0
+                    )
+                    mcc = matthews_corrcoef(eval_labels, eval_preds)
+                    f.write(
+                        "Weigthted F1: {:.2f}\tMacro F1: {:.2f}\tMCC: {:.2f}\tPath fraction: {:.2f}\n".format(
+                            w_f1, m_f1, mcc, path_fraction
+                        )
+                    )
+                    f.write("\n\n")
 
         else:
             assert len(golds) == len(

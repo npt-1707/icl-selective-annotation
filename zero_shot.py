@@ -26,8 +26,7 @@ parser.add_argument("--seed", required=True, type=int)
 parser.add_argument("--data_cache_dir", required=True, type=str)
 parser.add_argument("--output_dir", required=True, type=str)
 parser.add_argument("--debug", action="store_true")
-parser.add_argument("--model_name", default="gpt-4o-mini", required=True, type=str)
-parser.add_argument("--emb_model", default="codebert", required=True, type=str)
+parser.add_argument("--model_name", default="gpt-4o-mini", type=str)
 parser.add_argument("--use_diff", action="store_true")
 args = parser.parse_args()
 
@@ -45,20 +44,12 @@ if __name__ == "__main__":
         os.makedirs(args.output_dir, exist_ok=True)
     _, eval_examples, _, _, format_example, label_map = get_task(args=args)
 
-    # print("Eval example 0:")
-    # print(eval_examples[0])
-    # print("Formatted example 0:")
-    # print(format_example(train_examples[0],label_map=label_map,args=args))
-    # print("Label map:")
-    # print(label_map)
-
     single_input_len = 1024
 
     bar = tqdm(range(len(eval_examples)), desc="Generate and Evaluate 0-shot results")
     output_dir = os.path.join(
         args.output_dir,
         args.task_name,
-        args.emb_model if args.use_diff else f"{args.emb_model}_only_message",
         "zero_shot",
     )
     if not os.path.isdir(output_dir):
@@ -142,5 +133,27 @@ if __name__ == "__main__":
         bar.update(1)
     bar.close()
     # logger.log("\n" + classification_report(labels, preds, zero_division=0))
-    with open(os.path.join(output_dir, f"classification_report_{args.model_name}.json"), "w") as f:
-        f.write(classification_report(labels, preds, zero_division=0))
+    if args.task_name == "vulfix":
+        with open(os.path.join(output_dir, f"classification_report_{args.model_name}.txt"), "w") as f:
+            f.write(classification_report(labels, preds, zero_division=0))
+    elif args.task_name == "treevul":
+        from sklearn.metrics import classification_report, precision_recall_fscore_support, matthews_corrcoef
+        from utils import evaluate_treevul
+        cwe_path = "/".join(args.data_cache_dir.split("/")[:-1]) + "/data/cwe_path.json"
+        with open(os.path.join(output_dir, f"result_{args.model_name}.txt"), "w") as f:
+            for i in range(1, 6):
+                f.write(f"Evaluating in depth {i}\n")
+                eval_preds, eval_labels = evaluate_treevul(preds, labels, cwe_path, i)
+                _, _, w_f1, _ = precision_recall_fscore_support(
+                    eval_labels, eval_preds, average="weighted", zero_division=0
+                )
+                _, _, m_f1, _ = precision_recall_fscore_support(
+                    eval_labels, eval_preds, average="macro", zero_division=0
+                )
+                mcc = matthews_corrcoef(eval_labels, eval_preds)
+                f.write(
+                    "Weigthted F1: {:.2f}\tMacro F1: {:.2f}\tMCC: {:.2f}\n".format(
+                        w_f1, m_f1, mcc
+                    )
+                )
+                f.write("\n\n")

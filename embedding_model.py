@@ -2,6 +2,10 @@
 from transformers import AutoModel, AutoTokenizer
 import torch
 import numpy as np
+from openai import OpenAI
+import tiktoken
+import time
+from tqdm import tqdm
 
 class CommitEmbeddingModel:
     def __init__(self, model_name, use_diff=True):
@@ -9,12 +13,6 @@ class CommitEmbeddingModel:
         self.model = None
         self.tokenizer = None
         self.use_diff = use_diff
-    
-    def load(self):
-        pass
-    
-    def to(self, device):
-        self.model.to(device)
 
     def calculate_sentence_embedding(self, sentences, **kargs):
         pass
@@ -70,19 +68,19 @@ class BERTModel(CommitEmbeddingModel):
             masks.append(output_mask)
         return ids, masks
 
-    def calculate_sentence_embedding(self, sentences, device, emb_batch_size):
+    def calculate_sentence_embedding(self, sentences, args):
         if not self.model and not self.tokenizer:
             self.load()
-        self.model.to(device)
+        self.model.to(args.device)
         num_sentences = len(sentences)
         embeddings = []
         ids, masks = self.tokenize_sentences(sentences)
-        for i in range(0, num_sentences, emb_batch_size):
-            end_idx = min(i+emb_batch_size, num_sentences)
+        for i in range(0, num_sentences, args.emb_batch_size):
+            end_idx = min(i+args.emb_batch_size, num_sentences)
             ids_batch = ids[i:end_idx]
             masks_batch = masks[i:end_idx]
-            ids_tensor = torch.tensor(ids_batch).to(device)
-            masks_tensor = torch.tensor(masks_batch).to(device)
+            ids_tensor = torch.tensor(ids_batch).to(args.device)
+            masks_tensor = torch.tensor(masks_batch).to(args.device)
             with torch.no_grad():
                 output = self.model(ids_tensor, attention_mask=masks_tensor)
                 embeddings+=output[1].detach().cpu().tolist()
@@ -97,13 +95,66 @@ class CodeBERTModel(BERTModel):
         self.model_name = 'microsoft/codebert-base'
 
 class OpenAIEmbeddingModel(CommitEmbeddingModel):
-    def __init__(self, model_name, use_diff=True):
+    def __init__(self, use_diff=True):
+        model_name = 'text-embedding-3-small'
         super().__init__(model_name, use_diff)
-        self.max_length = 1024
+        self.max_length = 8191
+        self.encoding = tiktoken.get_encoding("cl100k_base")
+
+    def tokenize_sentences(self, sentences):
+        ids = []
+        for sentence in sentences:
+            if self.use_diff:
+                message, diff = sentence
+                text = f"Commit message: {message} Diff: {diff}"
+            else:
+                message = sentence[0]
+                text = f"Commit message: {message}"
+            id = self.encoding.encode(text)[:self.max_length]
+            ids.append(id)
+        assert len(ids) == len(sentences), f"Number of encoded_ids {len(ids)} not equal to number of sentences {len(sentences)}"
+        return ids
+
+    def calculate_sentence_embedding(self, sentences, args):
+        encoded_tokens = self.tokenize_sentences(sentences)
+        client = OpenAI(api_key=args.key)
+        num_sentences = len(sentences)
+        embeddings = []
+        max_num_trials = 3
+        for i in tqdm(range(0, num_sentences, args.emb_batch_size), desc="Calculating embeddings"):
+            end_idx = min(i + args.emb_batch_size, num_sentences)
+            tokens = encoded_tokens[i:end_idx]
+            is_success = False
+            for _ in range(max_num_trials):
+                try:
+                    responses = client.embeddings.create(
+                        input=tokens,
+                        model="text-embedding-3-small",
+                        encoding_format="float",
+                        # dimensions=512,
+                    )
+                    is_success = True
+                    break
+                except Exception as e:
+                    print(f"Error: {e}")
+                    time.sleep(1)
+            assert is_success, f"Failed to get embeddings for batch {i} to {end_idx}"
+            for emb_obj in responses.data:
+                embeddings.append(emb_obj.embedding)
+
+        embeddings = np.array(embeddings)
+        mean_embeddings = np.mean(embeddings, axis=0, keepdims=True)
+        embeddings = embeddings - mean_embeddings
+        return embeddings
 
 def get_embedding_model(model_name, use_diff=True):
     if model_name == 'bert':
+        print("Using BERT model")
         return BERTModel(use_diff)
     elif model_name == 'codebert':
+        print("Using CodeBERT model")
         return CodeBERTModel(use_diff)
+    elif model_name == 'openai':
+        print("Using OpenAI Embedding model")
+        return OpenAIEmbeddingModel(use_diff)
     assert False, f"Embedding model name not supported: {model_name}"

@@ -10,7 +10,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 from collections import defaultdict
 from sklearn.metrics.pairwise import cosine_similarity
-from utils import codex_execution, gpt_completion
+from utils import codex_execution, gpt_completion, get_ColBERT_indexer_searcher
 
 
 def prompt_retrieval(
@@ -26,7 +26,14 @@ def prompt_retrieval(
     prompt_cache_dir,
     single_context_example_len=None,
 ):
-    cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+    if args.prompt_retrieval_method == "similar":
+        cos = nn.CosineSimilarity(dim=1, eps=1e-6)
+    elif args.prompt_retrieval_method == "colbert":
+        def get_messages(examples):
+            return [example[0]["msg"] for example in examples]
+        train_msgs = get_messages(train_examples)
+        test_msgs = get_messages(eval_examples)
+        searcher = get_ColBERT_indexer_searcher(train_msgs, args)
     train_embs = torch.tensor(train_embs)
     test_embs = torch.tensor(test_embs)
     eval_example_num = len(eval_examples)
@@ -62,26 +69,46 @@ def prompt_retrieval(
             cur_prompt_string_len = get_instance_length(
                 one_test_instance_input_text, one_test_instance_output_text, tokenizer
             )[0]
-        if args.prompt_retrieval_method == "similar":
-            test_e_reshape = test_embs[test_id].reshape(1, -1)
-            scores = cos(test_e_reshape, train_embs).numpy()
-            sorted_indices = np.argsort(scores)
-        elif args.prompt_retrieval_method == "random":
-            sorted_indices = np.random.permutation(range(eval_example_num))
+        selected_shot = 0
+        if one_test_instance[0]["msg"] == "":
+            sorted_indices = []
+            indices_scores = []
+            
         else:
-            raise ValueError(
-                f"The prompt retrieval method {args.prompt_retrieval_method} is not supported"
-            )
-        selected_indices = []
-        num_indices = len(sorted_indices)
-        for idx in range(num_indices - 1, -1, -1):
+            if args.prompt_retrieval_method == "similar":
+                test_e_reshape = test_embs[test_id].reshape(1, -1)
+                scores = cos(test_e_reshape, train_embs).numpy()
+                sorted_indices = np.argsort(scores)
+                indices_scores = []
+                
+            elif args.prompt_retrieval_method == "colbert":
+                msg = test_msgs[test_id]
+                results = searcher.search(msg, k=5)
+                indices_scores = []
+                sorted_indices = []
+                for passage_id, passage_rank, passage_score in zip(*results):
+                    if searcher.collection[passage_id] != msg:
+                        indices_scores.append([int(passage_id), float(passage_score)])
+                        selected_shot += 1
+            elif args.prompt_retrieval_method == "random":
+                sorted_indices = np.random.permutation(range(eval_example_num))
+                indices_scores = []
+                
+            else:
+                raise ValueError(
+                    f"The prompt retrieval method {args.prompt_retrieval_method} is not supported"
+                )
+
+        for idx in sorted_indices[::-1]:
             if (
                 args.prompt_retrieval_method == "similar"
-                and scores[sorted_indices[idx]] == 1
+                and scores[idx] == 1
             ):
                 continue
+            if args.few_shot == selected_shot or scores[idx] < args.threshold:
+                break
             cur_example_input_text, cur_example_output_text = format_example(
-                example=train_examples[sorted_indices[idx]],
+                example=train_examples[idx],
                 args=args,
                 label_map=label_map,
             )
@@ -89,11 +116,10 @@ def prompt_retrieval(
                 cur_example_input_text = tiktoken_truncate(
                     cur_example_input_text, max_len=single_context_example_len
                 )
-                cur_len = sum(
-                    num_tokens_from_string(
-                        cur_example_input_text, cur_example_output_text
-                    )
+                input_len, output_len = num_tokens_from_string(
+                    cur_example_input_text, cur_example_output_text
                 )
+                cur_len = input_len + output_len
             else:
                 cur_len = sum(
                     get_instance_length(
@@ -102,47 +128,19 @@ def prompt_retrieval(
                         tokenizer=tokenizer,
                     )
                 )
-            if (
-                single_context_example_len is not None
-                and cur_len > single_context_example_len
-                and args.task_name in ["vulfix", "treevul"]
-            ):
-                continue
             cur_prompt_string_len += cur_len
             if cur_prompt_string_len > maximum_input_len:
                 break
-            selected_indices.append(idx)
+            indices_scores.append([idx.item(), scores[idx].item()])
+            selected_shot += 1
 
-        one_test_emb = test_embs[test_id]
-        indices_scores = []
-        for idx in selected_indices:
-            indices_scores.append(
-                [
-                    idx,
-                    cos(
-                        train_embs[sorted_indices[idx]].reshape(1, -1),
-                        one_test_emb.reshape(1, -1),
-                    ).item(),
-                ]
-            )
-        indices_scores = sorted(indices_scores, key=lambda x: x[1], reverse=True)
-        new_selected_indices = [x[0] for x in indices_scores]
-        if args.prompt_retrieval_method in ["similar"]:
-            assert new_selected_indices == selected_indices, (
-                f"new_selected_indices={new_selected_indices}, "
-                f"selected_indices={selected_indices}"
-            )
-        selected_indices = new_selected_indices
-
-        select_num = len(selected_indices)
-        second_phase_selected_indices = []
         if return_string:
             cur_train_data = ""
         else:
             cur_train_data = []
-        for idx in range(select_num - 1, -1, -1):
+        for idx, score in indices_scores:
             cur_input_text, cur_output_text = format_example(
-                example=train_examples[sorted_indices[selected_indices[idx]]],
+                example=train_examples[idx],
                 args=args,
                 label_map=label_map,
             )
@@ -159,7 +157,7 @@ def prompt_retrieval(
                             "input": cur_input_text,
                             "output": cur_output_text,
                             "options": train_examples[
-                                sorted_indices[selected_indices[idx]]
+                                idx
                             ]["endings"],
                         }
                     )
@@ -167,12 +165,8 @@ def prompt_retrieval(
                     cur_train_data.append(
                         {"input": cur_input_text, "output": cur_output_text}
                     )
-            second_phase_selected_indices.append(
-                [sorted_indices[selected_indices[idx]].item()]
-            )
         if return_string:
             cur_train_data += one_test_instance_input_text
-        # print(f'{len(second_phase_selected_indices)} examples in context')
         assert (
             num_tokens_from_string(cur_train_data, " ")[0]
             <= maximum_input_len + single_context_example_len
@@ -182,7 +176,8 @@ def prompt_retrieval(
                 [
                     [
                         test_id,
-                        second_phase_selected_indices,
+                        indices_scores,
+                        [[scores[i].item(), train_examples[i][0]["path_list"]] for i in range(len(scores))],
                         (
                             one_test_instance["label"]
                             if "label" in one_test_instance
@@ -198,7 +193,7 @@ def prompt_retrieval(
         bar.update(1)
 
 
-def fast_votek(embeddings, select_num, k, vote_file=None):
+def fast_votek(embeddings, examples, select_num, k, args, vote_file=None, searcher=None):
     n = len(embeddings)
     if vote_file is not None and os.path.isfile(vote_file):
         with open(vote_file) as f:
@@ -207,9 +202,14 @@ def fast_votek(embeddings, select_num, k, vote_file=None):
         bar = tqdm(range(n), desc=f"voting")
         vote_stat = defaultdict(list)
         for i in range(n):
-            cur_emb = embeddings[i].reshape(1, -1)
-            cur_scores = np.sum(cosine_similarity(embeddings, cur_emb), axis=1)
-            sorted_indices = np.argsort(cur_scores).tolist()[-k - 1 : -1]
+            if args.prompt_retrieval_method == "simalar":
+                cur_emb = embeddings[i].reshape(1, -1)
+                cur_scores = np.sum(cosine_similarity(embeddings, cur_emb), axis=1)
+                sorted_indices = np.argsort(cur_scores).tolist()[-k - 1 : -1]
+            elif args.prompt_retrieval_method == "colbert":
+                cur_msg = examples[i][0]["msg"]
+                results = searcher.search(cur_msg, k=k)
+                sorted_indices = [int(passage_id) for passage_id in results[0]]
             for idx in sorted_indices:
                 if idx != i:
                     vote_stat[idx].append(i)
@@ -255,11 +255,17 @@ def iterative_selection(
     if args.selective_annotation_method == "least_confidence":
         selected_indices = random.sample(range(len(train_examples)), args.batch_size)
     elif args.selective_annotation_method == "votek":
+        vote_file = os.path.join(output_dir, "votek_cache.json")
+        train_msgs = [example[0]["msg"] for example in train_examples]
+        colbert_searcher = get_ColBERT_indexer_searcher(train_msgs, args)
         selected_indices = fast_votek(
             embeddings=train_embs,
+            examples=train_examples,
             select_num=args.batch_size,
             k=150,
-            vote_file=os.path.join(output_dir, "votek_cache.json"),
+            vote_file=vote_file,
+            args=args,
+            searcher=colbert_searcher,
         )
     else:
         raise ValueError(
@@ -394,7 +400,9 @@ def iterative_selection(
                                 gpt_completion(
                                     key=cur_key,
                                     output_path=os.path.join(result_dir, file),
-                                    sys_prompt_path=os.path.join("sys_prompts", f"{args.task_name}.json"),
+                                    sys_prompt_path=os.path.join(
+                                        "sys_prompts", f"{args.task_name}.json"
+                                    ),
                                     prompt_path=os.path.join(prompt_dir, file),
                                     model_name=args.model_name,
                                 )
@@ -474,7 +482,7 @@ def iterative_selection(
                     cur_selected.append(sorted_scores[sorted_scores_iter][0])
             selected_indices += cur_selected
         else:
-            with open(os.path.join(output_dir, "votek_cache.json")) as f:
+            with open(vote_file, "r") as f:
                 vote_stat = json.load(f)
             selected_times = defaultdict(int)
             select_num_1 = args.annotation_size - len(selected_indices)

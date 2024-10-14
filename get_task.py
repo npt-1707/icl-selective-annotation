@@ -749,11 +749,9 @@ def get_task(args):
         if not os.path.isdir(os.path.join(args.output_dir, args.task_name)):
             os.makedirs(os.path.join(args.output_dir, args.task_name), exist_ok=True)
         train_file = os.path.join(
-            args.output_dir, args.task_name, f"train_examples_seed_{args.seed}.json"
+            args.output_dir, args.task_name, f"train_examples.json"
         )
-        test_file = os.path.join(
-            args.output_dir, args.task_name, f"eval_examples_seed_{args.seed}.json"
-        )
+        test_file = os.path.join(args.output_dir, args.task_name, f"eval_examples.json")
         if os.path.isfile(train_file) and os.path.isfile(test_file):
             print("use cached examples")
             with open(train_file) as f:
@@ -806,19 +804,32 @@ def get_task(args):
                     diff.append(f"Removed: `{rem_diff[j]}` Added: `{add_diff[j]}`")
             diff = "\n".join(diff)
             all_eval_text_to_encode.append((msg, diff))
+        cwe_tree_path = os.path.join(
+            "/".join(args.data_cache_dir.split("/")[:-1]), "data", "cwe_tree.json"
+        )
+        with open(cwe_tree_path, "r") as f:
+            cwe_tree = json.load(f)
+
         def format_example(example, label_map, **kwargs):
+            label = example[0]["cwe_list"]
+            cwe_info = cwe_tree[label.split("-")[1]]
+
             def format_hunk(r_hunks, a_hunks):
-                assert len(r_hunks) == len(a_hunks), "Length of removed and added hunks must be the same"
+                assert len(r_hunks) == len(
+                    a_hunks
+                ), "Length of removed and added hunks must be the same"
                 lines = []
                 for i in range(len(r_hunks)):
                     line = f"Removed: ```{r_hunks[i]}``` Added: ```{a_hunks[i]}```"
                     lines.append(line)
                 return "\n".join(lines)
+
             question = f"Question: What CWE was caused by this vulnerability?\nCommit message: {example[0]['msg']}\nCommit_diff:\n"
             for c in example:
                 question += f"{format_hunk(c['REM_DIFF'], c['ADD_DIFF'])}\n"
-            answer = f"Answer: {example[0]['cwe_list']}"
+            answer = f"Answer: {label}\nCWE Information: ID: {label} - Name: {cwe_info['Name']} - Description: {cwe_info['Description']}"
             return (question, answer)
+
         label_map = None
 
     else:
