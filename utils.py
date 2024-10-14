@@ -742,7 +742,7 @@ def get_ColBERT_indexer_searcher(collections, args):
     index_name = f"index.{nbits}bits"
     checkpoint = 'colbert-ir/colbertv2.0'
 
-    experiment = args.task_name + "_" + args.emb_model if args.use_diff else f"{args.emb_model}_only_message" + "_" + args.selective_annotation_method + "_" + args.seed
+    experiment = args.task_name + "_" + args.emb_model if args.use_diff else f"{args.emb_model}_only_message" + "_" + args.selective_annotation_method + "_" + str(args.seed)
     with Run().context(RunConfig(nranks=1, experiment=experiment)):  # nranks specifies the number of GPUs to use
         config = ColBERTConfig(doc_maxlen=doc_maxlen, nbits=nbits, kmeans_niters=4) # kmeans_niters specifies the number of iterations of k-means clustering; 4 is a good and fast default.                                                                           # Consider larger numbers for small datasets.
 
