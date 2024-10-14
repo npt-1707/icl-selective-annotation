@@ -54,6 +54,7 @@ parser.add_argument("--batch_size", default=10, type=int)
 # parser.add_argument("--eval_depth", default=3, type=int)
 parser.add_argument("--few_shot", default=3, type=int)
 parser.add_argument("--thershold", default=0.5, type=float)
+parser.add_argument("--cwe_tree_path", type=str)
 parser.add_argument("--debug", action="store_true")
 args = parser.parse_args()
 

@@ -804,9 +804,7 @@ def get_task(args):
                     diff.append(f"Removed: `{rem_diff[j]}` Added: `{add_diff[j]}`")
             diff = "\n".join(diff)
             all_eval_text_to_encode.append((msg, diff))
-        cwe_tree_path = os.path.join(
-            "/".join(args.data_cache_dir.split("/")[:-1]), "data", "cwe_tree.json"
-        )
+        cwe_tree_path = args.cwe_tree_path
         with open(cwe_tree_path, "r") as f:
             cwe_tree = json.load(f)
 
